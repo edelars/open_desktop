@@ -556,26 +556,28 @@ fn prefixed_forms_are_refused_without_a_change() {
 
 #[test]
 fn sysenter_sysret_and_neighbours_stay_refused() {
-    // SYSENTER/SYSEXIT (0F 34/35), SYSCALL-like 0F 06 (CLTS) and 0F 08 (INVD) are not admitted
-    // by the member (SYSRET at CPL3 is the #GP(0) of S2-27m, tested separately).
-    let cases: [(&[u8], u8); 4] = [
-        (&[0x0f, 0x34], 0x34),
-        (&[0x0f, 0x35], 0x35),
-        (&[0x0f, 0x06], 0x06),
-        (&[0x0f, 0x08], 0x08),
+    // SYSENTER (0F 34, class `NotAtCpl3`), SYSCALL-like 0F 06 (CLTS) and 0F 08 (INVD) are not
+    // admitted (SYSRET at CPL3 is the #GP(0) of S2-27m, tested separately). ADR-0023 C1: SYSEXIT
+    // (0F 35) is `Privileged`, #GP(0) at CPL3 (Vol. 2B "SYSEXIT": #GP(0) if CPL ≠ 0).
+    let gp0 = RunExit::Fault(od_isa::ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    });
+    let cases: [(&[u8], RunExit); 4] = [
+        (&[0x0f, 0x34], RunExit::Unsupported { opcode: 0x34 }),
+        (&[0x0f, 0x35], gp0),
+        (&[0x0f, 0x06], RunExit::Unsupported { opcode: 0x06 }),
+        (&[0x0f, 0x08], RunExit::Unsupported { opcode: 0x08 }),
     ];
-    for (code, opcode) in cases {
+    for (code, expected) in cases {
         let cells = Cells::linux();
         let set = cells.set();
         let mut state = user_state();
         let before = state.clone();
         let mut memory = Memory::code(code);
         let result = run3(&mut state, &mut memory, &set, 5, 2).unwrap();
-        assert_eq!(
-            exit(&result),
-            &RunExit::Unsupported { opcode },
-            "{code:02x?}"
-        );
+        assert_eq!(exit(&result), &expected, "{code:02x?}");
         assert_eq!(result.instructions_executed, 0, "{code:02x?}");
         assert_eq!(state, before, "{code:02x?}");
     }

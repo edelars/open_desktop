@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 pub mod binary_float;
 pub mod cli;
+pub mod cpl3_class;
 pub mod cpuid;
 pub mod cr8;
 pub mod execute;
@@ -40,6 +41,7 @@ pub mod syscall;
 pub mod x87;
 pub mod x87_transcend;
 pub use cli::CliProfile;
+pub use cpl3_class::{Cpl3Class, Cpl3Gate, Cr4Gate, IoplKind, cpl3_class, cpl3_gate};
 pub use execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
     Cpl0ProfileSetResult, Cr0Profile, FlatLidtLong64V1, GuestFpState, InvlpgExit, InvlpgLong64V1,

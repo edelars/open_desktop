@@ -879,8 +879,8 @@ fn the_memory_forms_need_no_alignment_and_a_failing_access_changes_nothing() {
 }
 
 #[test]
-fn at_cpl3_with_the_alignment_check_armed_a_misaligned_operand_is_refused_and_an_aligned_one_runs()
-{
+fn at_cpl3_with_the_alignment_check_armed_a_misaligned_operand_is_alignment_check_and_an_aligned_one_runs()
+ {
     for (code, size) in [
         (vec![0x0f, 0xfd, 0x00], 8u64),
         (vec![0x0f, 0x6f, 0x00], 8),
@@ -899,8 +899,14 @@ fn at_cpl3_with_the_alignment_check_armed_a_misaligned_operand_is_refused_and_an
             if offset % size == 0 {
                 assert_eq!(outcome, Ok(StepOutcome::Advanced), "{code:02x?} +{offset}");
             } else {
-                assert!(
-                    matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+                // ADR-0023 C1 (decision 4): #AC(0) by the size of the MMX operand (it was a refusal).
+                assert_eq!(
+                    outcome,
+                    Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None
+                    })),
                     "{code:02x?} +{offset}"
                 );
                 assert_eq!(cpu, before);

@@ -1243,7 +1243,7 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
 }
 
 #[test]
-fn an_unaligned_source_at_cpl3_with_the_alignment_check_armed_is_refused_not_guessed() {
+fn an_unaligned_source_at_cpl3_with_the_alignment_check_armed_is_alignment_check_below_16_bytes() {
     const AC: u64 = 1 << 18;
     for perm in PERMS.iter().filter(|perm| !perm.aligned) {
         let code = [perm.prefix, &[0x0f, perm.opcode, 0x18]].concat();
@@ -1256,17 +1256,24 @@ fn an_unaligned_source_at_cpl3_with_the_alignment_check_armed_is_refused_not_gue
             let outcome = step(&code, &mut cpu, &mut ram, privilege);
             (outcome, cpu == before)
         };
-        // Misaligned to the access size, AC = 1, CPL3: refused, no state change.
+        // ADR-0023 C1 (decision 4): misaligned to the access size, AC = 1, CPL3: #AC(0) with no state change for an
+        // 8-byte access (MOVDDUP m64); a 16-byte access (LDDQU) has no #AC (Vol. 2A §2.5, Type 4) and runs.
         let (outcome, unchanged) = run(FLAGS | AC, 0x8001, PrivilegeLevel::Ring3);
-        assert_eq!(
-            outcome,
-            Ok(StepOutcome::Unsupported {
-                opcode: perm.opcode
-            }),
-            "{}",
-            perm.name
-        );
-        assert!(unchanged);
+        if perm.opcode == 0xf0 {
+            assert_eq!(outcome, Ok(StepOutcome::Advanced), "{}", perm.name);
+        } else {
+            assert_eq!(
+                outcome,
+                Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                    vector: 17,
+                    error_code: Some(0),
+                    linear_address: None
+                })),
+                "{}",
+                perm.name
+            );
+            assert!(unchanged);
+        }
         // Aligned, AC clear, or CPL0: runs.
         for (rflags, address, privilege) in [
             (FLAGS | AC, 0x8000, PrivilegeLevel::Ring3),
@@ -1907,7 +1914,7 @@ fn fisttp_is_gated_by_cr0_em_and_ts_not_by_osfxsr_and_needs_x87_state() {
 }
 
 #[test]
-fn an_unaligned_fisttp_destination_at_cpl3_with_the_alignment_check_armed_is_refused() {
+fn an_unaligned_fisttp_destination_at_cpl3_with_the_alignment_check_armed_is_alignment_check() {
     const AC: u64 = 1 << 18;
     for (opcode, bytes, bits) in WIDTHS {
         let code = fisttp_at_rax(opcode);
@@ -1923,7 +1930,17 @@ fn an_unaligned_fisttp_destination_at_cpl3_with_the_alignment_check_armed_is_ref
         };
         let misaligned = 0x8000 + bytes as u64 / 2;
         let (outcome, unchanged) = run(FLAGS | AC, misaligned, PrivilegeLevel::Ring3);
-        assert_eq!(outcome, Ok(StepOutcome::Unsupported { opcode }), "m{bits}");
+        // ADR-0023 C1 (decision 4): #AC(0) by the operand size of FISTTP (it was a refusal).
+        let _ = opcode;
+        assert_eq!(
+            outcome,
+            Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                vector: 17,
+                error_code: Some(0),
+                linear_address: None,
+            })),
+            "m{bits}"
+        );
         assert!(unchanged);
         for (rflags, address, privilege) in [
             (FLAGS | AC, 0x8000, PrivilegeLevel::Ring3),

@@ -1889,6 +1889,35 @@ const CR4_CET: u64 = 1 << 23;
 const _: () =
     assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_CET));
 
+/// ADR-0023 slice C1: the CR4 bits of the `Cr4Gated` class (`cpl3_class::cpl3_gate`). TSD (bit 2):
+/// `RDTSC` #GP(0) at CPL > 0 when set; PCE (bit 8): `RDPMC` #GP(0) at CPL > 0 when clear; UMIP
+/// (bit 11): `SGDT`/`SIDT`/`SLDT`/`STR` #GP(0) at CPL > 0 when set (SDM 325462-093US Vol. 2B).
+pub(crate) const CR4_TSD: u64 = 1 << 2;
+pub(crate) const CR4_PCE: u64 = 1 << 8;
+pub(crate) const CR4_UMIP: u64 = 1 << 11;
+/// ADR-0023 slices C1/C2c: the CR4 bits of instruction classes the decoder does not know yet
+/// (`RD/WRFSBASE`, `XGETBV`/`XSAVE*`/VEX, `RDPKRU`/`WRPKRU`).
+const CR4_FSGSBASE: u64 = 1 << 16;
+const CR4_OSXSAVE: u64 = 1 << 18;
+const CR4_PKE: u64 = 1 << 22;
+// ADR-0023 slice C1: the CR4 policy keeps TSD, PCE, UMIP, FSGSBASE, OSXSAVE and PKE clear. For TSD,
+// PCE and UMIP the branch of the `Cr4Gated` class for the other value of the bit is unreachable (it is
+// covered by the unit tests of `cpl3_gate`); for FSGSBASE, OSXSAVE and PKE `cpl3_gate` has no branch at
+// all. Admitting one of the bits breaks this build: then the branch in `cpl3_gate` (and for the last
+// three their operations and `Cr4Gate` kinds, slice C2c) is needed.
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_TSD));
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_PCE));
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_UMIP));
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_FSGSBASE));
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_OSXSAVE));
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_PKE));
+
 /// S7-32 slice I: a CR0 value that `MOV CR0` refuses with #GP(0) before any policy check: NW set
 /// while CD is clear (SDM Vol. 2B "MOV—Move to/from Control Registers", 64-Bit Mode Exceptions:
 /// "an attempt to write invalid bit combinations in CR0 (such as ... setting the CD flag to 0 when
@@ -2794,9 +2823,8 @@ pub enum Cpl0ProfileSetInputError {
     NotRunning,
     StiShadowMissing,
     /// Reserved: no longer returned (S7-31g). A `Blocking` shadow (from `MOV SS` or `STI`, IF = 0
-    /// or 1) is accepted at entry by every set. At CPL3 a shadow with IF = 1 and no `with_sti`
-    /// is refused later, by the step, as `Unsupported { opcode: 0xfb }` with nothing retired
-    /// (CPU_CONTRACT.md, section S7-31g).
+    /// or 1) is accepted at entry by every set and carried at CPL0 and, since ADR-0023 C1 (`MOV SS`
+    /// at CPL3), at CPL3 (CPU_CONTRACT.md, section S7-31g).
     StiShadowActive,
     CliPreconditionFailed,
     /// RFLAGS.VM is set. Virtual-8086 mode does not exist in IA-32e mode, so
@@ -21063,15 +21091,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.prefixes == Prefixes::default() =>
         {
             let register = match operation {
-                Operation::LoadNullDsSelector => Cpl0Sreg::Ds,
-                Operation::LoadNullEsSelector => Cpl0Sreg::Es,
-                Operation::LoadNullSsSelector => Cpl0Sreg::Ss,
-                Operation::LoadFsSelector => Cpl0Sreg::Fs,
-                Operation::LoadGsSelector => Cpl0Sreg::Gs,
+                Operation::LoadNullDsSelector => SetSreg::Ds,
+                Operation::LoadNullEsSelector => SetSreg::Es,
+                Operation::LoadNullSsSelector => SetSreg::Ss,
+                Operation::LoadFsSelector => SetSreg::Fs,
+                Operation::LoadGsSelector => SetSreg::Gs,
                 _ => unreachable!("matched a segment load"),
             };
             let selector = state.gpr[Register::Rax as usize] as u16;
-            match load_sreg_cpl0(state, memory, context, register, selector, true) {
+            match load_sreg(state, memory, context, register, selector, true) {
                 Ok(true) => {}
                 Ok(false) => return unsupported(),
                 Err(MemoryError::Architectural(fault)) => {
@@ -21079,7 +21107,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 }
                 Err(error) => return result(PagedProbeExit::Backend(error), 0),
             }
-            if register == Cpl0Sreg::Ss {
+            if register == SetSreg::Ss {
                 state.sti_shadow = Some(crate::StiShadow::Blocking);
             }
             state.rip = next_rip;
@@ -22453,7 +22481,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && instruction.opcode.byte == 0x9d
                 && instruction.prefixes == Prefixes::default() =>
         {
-            match popfq_cpl0(state, memory, context) {
+            match popf_set(state, memory, context, OperandSize::Qword) {
                 Ok(true) => {}
                 Ok(false) => return unsupported(),
                 Err(MemoryError::Architectural(fault)) => {
@@ -30982,13 +31010,19 @@ fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
 /// [`Cpl0ProfileSetInputError::WrongPrivilege`] with nothing fetched or changed. The CPL0 entries
 /// keep refusing a Ring3 context with the same error.
 ///
-/// Before every instruction the decoded form is checked against a fixed allow-list (see
-/// [`cpl3_allows`]); any other form ends the run with `Unsupported` before it executes: no
-/// architectural change, no retire, no #GP. This is an honest stop, not guest-visible behavior.
-/// A decode failure or a fetch error skips the allow-list: the step reports it identically and
-/// executes nothing. The run uses single-instruction steps of the CPL0 loop, so the STOP
-/// callback is polled up to twice per instruction boundary; `IN`/`OUT`, the CR3 effect and the
-/// `IRETQ` boundary are never reached because they are not allow-listed.
+/// ADR-0023 slice C1: before every instruction the decoded form is classified
+/// ([`crate::cpl3_class::cpl3_class`]). A form of a class other than `Neutral` goes straight to the
+/// step, whose privilege layer decides it: the #UD conditions of the decode list, then the gate of
+/// the class (#GP(0) before any memory access; `NotAtCpl3` is `Unsupported` with nothing changed;
+/// the executors of `IoplSensitive` and `CplSpecific` apply their CPL3 rules). A form of the class
+/// `Neutral` is still checked against a fixed allow-list (see [`cpl3_allows`]; replaced in slice C2a);
+/// any other `Neutral` form ends the run with `Unsupported` before it executes: no architectural
+/// change, no retire, no #GP. This is an honest stop, not guest-visible behavior. A decode failure
+/// or a fetch error skips the allow-list: the step reports it identically and executes nothing. The
+/// run uses single-instruction steps of the CPL0 loop, so the STOP callback is polled up to twice
+/// per instruction boundary. The entry has no port: an `IN`/`OUT` that the TSS bit map allows is
+/// `Unsupported` (`NotAtCpl3`); the CR3 effect and the `IRETQ` boundary of the CPL0 entry are not
+/// reached at CPL3 (MOV CR3 is #GP(0), `IRETQ` returns to the same level).
 ///
 /// REP MOVSB (S4-39f20) and REP STOSQ (S6-22) run in [`cpl3_rep_string`] with DF clear.
 /// Each iteration consumes one unit of the budget. The STOP callback is polled before every
@@ -31000,7 +31034,8 @@ fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
 /// set (see `cpl3_sse_set_form`); the allow-list above still decides every other form. The CPL3 rules of those forms:
 /// the CR0.EM/TS and CR4.OSFXSR gates, canonical addresses (`#GP`, `#SS` for an RSP/RBP base), the page privilege of the
 /// context, the alignment `#GP` of the aligned forms, and `Unsupported` (nothing changed) for a misaligned operand with
-/// RFLAGS.AC = 1 and CR0.AM = 1 (`#AC` is not modeled, ADR-0015 item 9). MMX and the forms that need the MMX registers
+/// RFLAGS.AC = 1 and CR0.AM = 1 is #AC(0) since ADR-0023 C1 (decision 4, Table 7-7; it was `Unsupported` under
+/// ADR-0015 item 9). MMX and the forms that need the MMX registers
 /// stay refused: the x87 half of the cell is not loaded at CPL3.
 ///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
@@ -31029,7 +31064,13 @@ pub fn run_with_cpl3_profile_set(
     let mut rflags_defined = initial_rflags_defined;
     loop {
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
-        if !boundary && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
+        // ADR-0023 slice C1: the allow-list decides only the class `Neutral`; every other class goes
+        // straight to the step, whose privilege layer decides it (#GP(0), #UD, the rule of its
+        // executor or `Unsupported` for `NotAtCpl3`): one place of decision.
+        if !boundary
+            && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
+            && crate::cpl3_class::cpl3_class(&instruction.operation)
+                == crate::cpl3_class::Cpl3Class::Neutral
         {
             // The shared REP step runs the entire string. For these CPL3 forms, charge each
             // iteration so the scheduler can stop and resume them at a quantum boundary.
@@ -31242,6 +31283,11 @@ fn cpl3_rep_string_shape(instruction: &long_decode::Instruction) -> Option<(Oper
 /// MOVS reads RSI and STOS uses the accumulator at the encoded width. Both write at RDI.
 /// Completed iterations advance the relevant pointers, decrement RCX, and consume one unit.
 /// A fault leaves the current iteration's pointers, count, and RIP intact. Flags stay unchanged.
+/// ADR-0023 C1 (review R1): a `Blocking` shadow (MOV SS at CPL3, or STI under `with_sti`) ends when
+/// the instruction retires, as in the run loop of the set at CPL0, where the shared REP step runs
+/// the whole string as one retired step (`run_cpl0_profile_set_inner`: `old_shadow == Blocking` →
+/// `Clear` after `Advanced`): it is kept across the budget boundaries of a partial string (the
+/// instruction has not retired) and cleared when RIP advances past it.
 fn cpl3_rep_string(
     size: OperandSize,
     store: bool,
@@ -31258,6 +31304,7 @@ fn cpl3_rep_string(
     }
     if state.gpr[Register::Rcx as usize] == 0 {
         state.rip = next_rip;
+        cpl3_rep_string_retire_shadow(state);
         *retired += 1;
         return None;
     }
@@ -31314,7 +31361,16 @@ fn cpl3_rep_string(
         *retired += 1;
     }
     state.rip = next_rip;
+    cpl3_rep_string_retire_shadow(state);
     None
+}
+
+/// The end of the one-instruction shadow when a CPL3 REP string retires (see [`cpl3_rep_string`]).
+#[inline(always)]
+fn cpl3_rep_string_retire_shadow(state: &mut LongModeState) {
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+    }
 }
 
 /// S4-39a Ring3 admission by the cached state: CS selector RPL 3 over a CS cache with DPL 3 and
@@ -35303,12 +35359,15 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
         };
     }
     // Under the CPL0 set a shadow may be carried across run boundaries: the shadow of a
-    // retired MOV SS (IF = 0 or 1, S7-31g) or STI (see the matching entry admission).
+    // retired MOV SS (IF = 0 or 1, S7-31g; ADR-0023 C1: at CPL3 too) or STI (see the matching
+    // entry admission).
     if sti_profile.is_none()
         && state.sti_shadow == Some(crate::StiShadow::Blocking)
         && !(control_policy.is_some()
-            && (config.context.privilege == PrivilegeLevel::Ring0
-                || state.rflags & (1 << 9) == 0
+            && (matches!(
+                config.context.privilege,
+                PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+            ) || state.rflags & (1 << 9) == 0
                 || profiles.sti_cpl0))
     {
         return RunResult {
@@ -42061,6 +42120,54 @@ fn step_configured(
     )
 }
 
+/// ADR-0023 slice C1, "Порядок проверок": the #UD conditions of the decode list that the set checks
+/// at CPL > 0 before the #GP(0) of privilege (SDM 325462-093US Vol. 3A §7.9, Table 7-2: a decode
+/// fault of the next instruction, priority 9, precedes its execution). The other conditions of the
+/// list come from the decoder as `DecodeError::Invalid` (LOCK on a form that forbids it, CR1,
+/// CR5-CR7, CR9-CR15, DR8-DR15), which the step turns into #UD before this layer.
+/// - `MOV DR4`/`MOV DR5` with CR4.DE = 1: #UD (Vol. 2B "MOV—Move to/from Debug Registers"; the page
+///   names #UD and #GP(0) without an order, #UD first is the choice of the model, ADR-0023).
+/// - `SYSRET` with CS.L = 0, EFER.LMA = 0 or EFER.SCE = 0: #UD before the #GP(0) of CPL (the
+///   Operation section of Vol. 2B "SYSRET": "IF (CS.L ≠ 1) or (IA32_EFER.LMA ≠ 1) or (IA32_EFER.SCE ≠
+///   1) THEN #UD; FI; IF (CPL ≠ 0) THEN #GP(0)"). EFER comes from the EFER cell of the set, as in
+///   `execute_sysret`; a set without the cell has no EFER and no EFER #UD here.
+fn cpl3_decode_list_fault(
+    state: &LongModeState,
+    instruction: &long_decode::Instruction,
+    efer: Option<&Cell<u64>>,
+) -> Option<ArchitecturalFault> {
+    let invalid_opcode = ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    };
+    // LOCK is legal only before the read-modify-write memory forms, which are all of the class
+    // `Neutral` (Vol. 2A "LOCK": #UD otherwise); a decoded non-`Neutral` form with LOCK (e.g. `F0 FA`,
+    // whose executor gives the #UD only after its member and CPL checks) is #UD here.
+    if instruction.prefixes.group1 == Some(0xf0)
+        && crate::cpl3_class::cpl3_class(&instruction.operation)
+            != crate::cpl3_class::Cpl3Class::Neutral
+    {
+        return Some(invalid_opcode);
+    }
+    match instruction.operation {
+        Operation::ReadDebugRegister { index, .. }
+        | Operation::WriteDebugRegister { index, .. }
+            if matches!(index, 4 | 5) && state.cr4.is_some_and(|cr4| cr4 & CR4_DE != 0) =>
+        {
+            Some(invalid_opcode)
+        }
+        Operation::Sysret
+            if efer
+                .is_some_and(|efer| efer.get() & (EFER_SCE | EFER_LMA) != EFER_SCE | EFER_LMA)
+                || state.cs_cache.is_some_and(|cs| cs.flags & 0x2 == 0) =>
+        {
+            Some(invalid_opcode)
+        }
+        _ => None,
+    }
+}
+
 fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -42375,11 +42482,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         return Ok(StepOutcome::Halted);
     }
     // S2-46: the CPL0 profile set carries a MOV SS shadow; S7-31g: at CPL0 with IF = 0 or 1. The
-    // shadow of a retired `STI` (IF = 1, `with_sti`) is carried the same way. At CPL3 the
-    // earlier rule stays (IF = 0, or `with_sti`): MOV SS is a CPL0 instruction here, and a
-    // shadow with IF = 1 found at CPL3 is not a state the set produces.
+    // shadow of a retired `STI` (IF = 1, `with_sti`) is carried the same way. ADR-0023 C1: at CPL3
+    // too, with IF = 0 or 1: `MOV SS` at CPL3 (`mov_to_sreg`) opens the shadow there, and an `STI`
+    // shadow at CPL3 needs IOPL = 3 and the STI member, which the set checks at `STI`.
     let mov_ss_shadow = control_policy.is_some()
-        && (context.privilege == PrivilegeLevel::Ring0 || state.rflags & (1 << 9) == 0 || sti_cpl0);
+        && (matches!(
+            context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        ) || state.rflags & (1 << 9) == 0
+            || sti_cpl0);
     if state.sti_shadow == Some(crate::StiShadow::Blocking)
         && sti_profile.is_none()
         && halt_profile.is_none()
@@ -42634,7 +42745,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // S2-39 (CPL3): the same holds at CPL3 of the set. The CPL3 entry runs the same step on the same `state.sse`; the
     // forms with a handler of their own in `step_cpl3_xmm` keep it (`sse_cpl0_cpl3_handler_form`), every other
     // SSE/SSE2 form takes the general core, whose executors already carry the CPL3 rules (canonical, #SS, the
-    // page privilege of the context, and `Unsupported` for a misaligned operand with RFLAGS.AC = 1 and CR0.AM = 1).
+    // page privilege of the context, and, since ADR-0023 C1, #AC(0) for a misaligned 2/4/8-byte operand with RFLAGS.AC = 1 and CR0.AM = 1).
     let sse_set = control_policy.is_some()
         && fp_cpl0.is_some()
         && matches!(
@@ -42882,6 +42993,48 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             });
         }
     }
+    // ADR-0023 slice C1: the privilege layer of the set at CPL > 0 (one place for every class).
+    // First the #UD conditions of the decode list, which precede the #GP(0) of privilege (SDM
+    // 325462-093US Vol. 3A §7.9, Table 7-2; ADR-0023 "Порядок проверок"), then the gate of the class
+    // of the operation: #GP(0) before any memory access of the instruction, `NotAtCpl3` an honest
+    // `Unsupported` with nothing changed; `Execute` and `ByExecutor` go on to the executors, which
+    // apply the CPL3 rules of their class. CPL0 and the paths outside the set never enter it.
+    if control_policy.is_some() && context.privilege != PrivilegeLevel::Ring0 {
+        if let Some(fault) = cpl3_decode_list_fault(state, &instruction, msr_efer_cell) {
+            return Ok(StepOutcome::Fault(fault));
+        }
+        let cpl = match context.privilege {
+            PrivilegeLevel::Ring0 => 0,
+            PrivilegeLevel::Ring1 => 1,
+            PrivilegeLevel::Ring2 => 2,
+            PrivilegeLevel::Ring3 => 3,
+        };
+        let iopl = ((state.rflags >> 12) & 3) as u8;
+        // The set always models CR4 (admission); 0 would only make the CR4 gates stricter.
+        let cr4 = state.cr4.unwrap_or(0);
+        match crate::cpl3_class::cpl3_gate(
+            crate::cpl3_class::cpl3_class(&instruction.operation),
+            cr4,
+            cpl,
+            iopl,
+        ) {
+            crate::cpl3_class::Cpl3Gate::Gp0 => {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            crate::cpl3_class::Cpl3Gate::NotModeled => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            crate::cpl3_class::Cpl3Gate::Execute | crate::cpl3_class::Cpl3Gate::ByExecutor => {}
+        }
+    }
+    // The paths outside the set and the narrow per-register profiles (in the set the layer above
+    // decides every MOV CRn / MOV DRn at CPL > 0).
     if ((cr0_profile.is_some()
         && matches!(
             instruction.operation,
@@ -42891,21 +43044,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             && matches!(
                 instruction.operation,
                 Operation::ReadCr4 | Operation::WriteCr4
-            ))
-        || (control_policy.is_some()
-            && matches!(
-                instruction.operation,
-                Operation::ReadCr0
-                    | Operation::WriteCr0
-                    | Operation::WriteCr0Rdi
-                    | Operation::ReadCr4
-                    | Operation::ReadCr4Into(_)
-                    | Operation::WriteCr4
-                    | Operation::WriteCr4From(_)
-                    // S7-32: the general MOV CRn and MOV r64, DRn forms (SDM: #GP(0) if CPL > 0).
-                    | Operation::ReadControl { .. }
-                    | Operation::WriteControl { .. }
-                    | Operation::ReadDebugRegister { .. }
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
             && matches!(
@@ -48823,6 +48961,40 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
         }
+        // ADR-0023 C1: IN/OUT at CPL3 of the set reach the step only with CPL > IOPL (the privilege
+        // layer stops CPL <= IOPL as `NotAtCpl3`: the CPL3 entry has no port). SDM 325462-093US Vol. 1
+        // §20.5.2: the I/O permission bit map of the TSS decides; a set bit or a map byte beyond the
+        // TSS limit is #GP(0); a #PF of the map read precedes it (ADR-0023 "Порядок проверок", item 1).
+        // An access the map allows is `Unsupported` (no port); so is a TR the state does not model.
+        Operation::InAlDx
+        | Operation::OutDxAl
+        | Operation::InAlImm8 { .. }
+        | Operation::OutImm8Al { .. }
+        | Operation::InDx { .. }
+        | Operation::OutDx { .. }
+            if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring3 =>
+        {
+            let dx = state.gpr[Register::Rdx as usize] as u16;
+            let (port, width) = match instruction.operation {
+                Operation::InAlDx | Operation::OutDxAl => (dx, 1),
+                Operation::InAlImm8 { port } | Operation::OutImm8Al { port } => {
+                    (u16::from(port), 1)
+                }
+                Operation::InDx { size } | Operation::OutDx { size } => (dx, size.bytes() as u8),
+                _ => unreachable!("the I/O forms of the arm"),
+            };
+            return match io_permitted_by_tss(state, memory, context, port, width) {
+                Ok(Some(false)) => Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })),
+                Ok(Some(true) | None) => Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                }),
+                Err(error) => report_memory_error(error),
+            };
+        }
         Operation::InDx {
             size: OperandSize::Dword,
         }
@@ -48925,6 +49097,36 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         return Ok(StepOutcome::Advanced);
     }
+    // ADR-0023 C1 (plan question V6): at CPL3 of the set `INT3` is delivered like `INT 3` through
+    // the gate of vector 3, without the INT3 member (which keeps guarding CPL0): SDM 325462-093US
+    // Vol. 2A "INT n/INTO/INT3/INT1", IA-32e mode: a software interrupt generated by INT n, INT3 or
+    // INTO checks gate DPL >= CPL, else #GP(vector·8 + 2). An IST gate stays `Unsupported`
+    // (ISSUE-710), as for `INT n`.
+    if control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring3
+        && matches!(instruction.operation, Operation::Int3)
+    {
+        return match crate::interrupt::deliver_software_interrupt_cpl0_set(
+            state, memory, 3, next_rip, context,
+        ) {
+            crate::interrupt::SoftwareInterruptDelivery::Delivered { .. } => {
+                Ok(StepOutcome::Branched)
+            }
+            crate::interrupt::SoftwareInterruptDelivery::GateDpl => {
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(3 * 8 + 2),
+                    linear_address: None,
+                }))
+            }
+            crate::interrupt::SoftwareInterruptDelivery::Refused => {
+                Ok(StepOutcome::Unsupported { opcode: 0xcc })
+            }
+            crate::interrupt::SoftwareInterruptDelivery::Aborted(cause) => {
+                report_memory_error(cause)
+            }
+        };
+    }
     if matches!(instruction.operation, Operation::Int3) {
         // S4-38L9e: the bare `CC` is delivered through the IDT gate of vector 3 inside the CPL0
         // profile set under its INT3 member only; everywhere else (bare `run`/`step`, the paged
@@ -48981,6 +49183,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             PrivilegeLevel::Ring3 => 3,
         };
         let iopl = (state.rflags >> 12) & 3;
+        // ADR-0023 C1: at CPL3 of the set the privilege layer already gave this #GP(0)
+        // (`IoplSensitive(InterruptFlag)`); with IOPL = 3 CLI/STI run here with their members
+        // (without a member they stay `Unsupported` above). CR4.PVI is outside the policy.
         if u64::from(cpl) > iopl {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector: 13,
@@ -49668,7 +49873,49 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         };
         return Ok(StepOutcome::Fault(fault));
     }
+    // ADR-0023 C1 (plan C1-5d): every segment-register load of the set at CPL3 (`CplSpecific`):
+    // the selector from its source, then `mov_to_sreg` with the CPL of the context (RPL/DPL against
+    // CPL; a null SS is #GP(0) at CPL3; a null DS/ES/FS/GS loads). The CPL0 forms keep their gates
+    // below unchanged. MOV SS keeps the state conditions of the set (`mov_ss_state_admitted`).
+    if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring3 {
+        let ax = Operand::Register(RegisterView::low(Register::Rax, OperandSize::Word));
+        let word = |register| Operand::Register(RegisterView::low(register, OperandSize::Word));
+        let load = match instruction.operation {
+            Operation::LoadFsSelector => Some((4, ax)),
+            Operation::LoadGsSelector => Some((5, ax)),
+            Operation::LoadFsSelectorReg { source } => Some((4, word(source))),
+            Operation::LoadGsSelectorReg { source } => Some((5, word(source))),
+            Operation::LoadSegmentSelectorReg { sreg, source } => Some((sreg, word(source))),
+            Operation::LoadNullEsSelector => Some((0, ax)),
+            Operation::LoadNullSsSelector => Some((2, ax)),
+            Operation::LoadNullDsSelector => Some((3, ax)),
+            Operation::MovToSreg { sreg, source } => Some((sreg, source)),
+            _ => None,
+        };
+        if let Some((sreg, source)) = load {
+            if (sreg == 2 && !mov_ss_state_admitted(state, context, true)) || state.gdtr.is_none() {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let selector = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value as u16,
+                Err(error) => return report_memory_error(error),
+            };
+            return match mov_to_sreg(state, memory, context, sreg, selector) {
+                Ok(true) => {
+                    state.rip = next_rip;
+                    Ok(StepOutcome::Advanced)
+                }
+                Ok(false) => Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                }),
+                Err(error) => report_memory_error(error),
+            };
+        }
+    }
     if matches!(instruction.operation, Operation::VerwGdt)
+        && control_policy.is_none()
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
             || state.gpr[Register::Rax as usize] as u16 & 4 != 0)
@@ -49762,7 +50009,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // 0 or 1; the one-instruction shadow it opens is modeled (`StiShadow::Blocking`, ended
         // after the next retired instruction), and the interrupt hook of the board delivers no
         // maskable interrupt while it lasts. S4-38L6c: a nonzero GDT selector (TI = 0, present
-        // GDTR) is admitted too and checked by `load_sreg_cpl0`.
+        // GDTR) is admitted too and checked by `load_sreg`.
         let selector = state.gpr[Register::Rax as usize] as u16;
         let admitted = mov_ss_state_admitted(state, context, control_policy.is_some())
             && (selector == 0 || (selector & 4 == 0 && state.gdtr.is_some()));
@@ -51170,6 +51417,46 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
+    // ADR-0023 decision 4: the #AC of the bounded x87 `[RAX]` forms (Table 7-7 by the size of the
+    // operand: m16 2, m32 4, m64 8; m80 and the packed BCD 8 — the BCD row is a choice of the model;
+    // the environment and the state images 4, the 32-bit format of the forms). Before the
+    // preflights of the forms: the fault precedes any effect; a non-canonical RAX keeps its #GP(0).
+    // `(requirement, operand length)`; the whole operand is checked canonical first (ADR-0023
+    // "Порядок проверок": canonical before alignment), else the executor gives its #GP(0).
+    let (x87_rax_requirement, x87_rax_length) = match instruction.operation {
+        Operation::FildM16IntRax
+        | Operation::FistM16IntRax
+        | Operation::FistpM16IntRax
+        | Operation::FldcwM16Rax
+        | Operation::FnstcwM16Rax
+        | Operation::FnstswM16Rax => (2, 2),
+        Operation::FldM32FpRax
+        | Operation::FstM32FpRax
+        | Operation::FstpM32FpRax
+        | Operation::FildM32IntRax
+        | Operation::FistM32IntRax
+        | Operation::FistpM32IntRax => (4, 4),
+        Operation::FnstenvRax | Operation::FldenvRax => (4, 28),
+        Operation::FnsaveRax | Operation::FrstorRax => (4, 108),
+        Operation::FldM64FpRax
+        | Operation::FstM64FpRax
+        | Operation::FstpM64FpRax
+        | Operation::FildM64IntRax
+        | Operation::FistpM64IntRax => (8, 8),
+        Operation::FldM80FpRax
+        | Operation::FstpM80FpRax
+        | Operation::FbldM80Rax
+        | Operation::FbstpM80Rax => (8, 10),
+        _ => (1, 1),
+    };
+    let rax = state.gpr[Register::Rax as usize];
+    if x87_rax_requirement > 1
+        && canonical(rax)
+        && rax.checked_add(x87_rax_length - 1).is_some_and(canonical)
+        && let Some(fault) = alignment_check_fault(state, context, rax, x87_rax_requirement)
+    {
+        return Ok(StepOutcome::Fault(fault));
+    }
     // S2-32c: the environment forms are control instructions; only the control word, status word
     // and the tag classification of the model are preflighted (see `bounded_x87_environment_admitted`).
     if matches!(
@@ -52561,7 +52848,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // executes the null-selector load only (0..=3, any RPL), inside the CPL0 profile set at
         // CPL0 in Long64. A non-null selector (GDT read, descriptor checks) is refused with the
         // opcode and nothing mutated.
-        // S7-32: any selector (the executor checks it through `mov_to_sreg_cpl0`).
+        // S7-32: any selector (the executor checks it through `mov_to_sreg`).
         Operation::LoadFsSelectorReg { .. } | Operation::LoadGsSelectorReg { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8e
@@ -52576,7 +52863,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // (length 3, no other prefix). SS keeps the S2-46 admission: a loaded SS cache, a clear
         // interrupt shadow and TF = 0; IF may be 0 or 1 since S7-31g (the shadow the instruction
         // opens is modeled). S7-32: any selector; the executor checks it through
-        // `mov_to_sreg_cpl0` (a null SS with RPL != 0 is #GP(0), a non-null one is a GDT load).
+        // `mov_to_sreg` (a null SS with RPL != 0 is #GP(0), a non-null one is a GDT load).
         Operation::LoadSegmentSelectorReg { sreg, .. } => {
             let rex_b = instruction.prefixes
                 == Prefixes {
@@ -52939,22 +53226,29 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.mode == crate::memory::InstructionMode::Long64
         }
         // S4-38L7al: SGDT m stores the modeled GDTR; admitted only inside the CPL0 profile set
-        // at CPL0 in Long64 and only when a GDTR is modeled (no GDTR value is invented).
+        // in Long64 and only when a GDTR is modeled (no GDTR value is invented). ADR-0023 C1: at
+        // CPL0 and CPL3 (class `Cr4Gated(Umip)`: CR4.UMIP is outside the set policy, so the
+        // privilege layer lets it execute; the store is an explicit access with the rights of the
+        // context, at CPL3 a user write).
         Operation::StoreGdtr { .. } => {
             control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring0
+                && matches!(
+                    context.privilege,
+                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+                )
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
         }
         // S7-32: SIDT m stores the modeled IDTR. The SDM allows it at any CPL (CR4.UMIP is outside
-        // the set policy); at CPL3 of the set it is refused before this point by `cpl3_allows`.
+        // the set policy); ADR-0023 C1: at CPL3 the privilege layer lets it execute
+        // (`Cr4Gated(Umip)`), the store is a user write.
         Operation::StoreIdtr { .. } => {
             control_policy.is_some()
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.idtr.is_some()
         }
-        // S7-32: SLDT/STR store a selector (legal at any CPL without UMIP; CPL3 of the set refuses
-        // them in `cpl3_allows`).
+        // S7-32: SLDT/STR store a selector (legal at any CPL without UMIP; ADR-0023 C1: at CPL3
+        // the privilege layer lets them execute, `Cr4Gated(Umip)`).
         Operation::StoreSystemSelector { .. } => {
             control_policy.is_some() && context.mode == crate::memory::InstructionMode::Long64
         }
@@ -52965,7 +53259,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.mode == crate::memory::InstructionMode::Long64
         }
         // S7-32: MOV Sreg, m16 at CPL0 (the selector is checked by the executor: a non-null one
-        // through `load_sreg_cpl0`). MOV SS takes the state conditions of the register forms
+        // through `load_sreg`). MOV SS takes the state conditions of the register forms
         // (`mov_ss_state_admitted`).
         Operation::MovToSreg { sreg, .. } => {
             control_policy.is_some()
@@ -52985,10 +53279,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S7-32: CLFLUSH is a byte-read access check; RDPMC is #GP(0) (no counters).
         Operation::Clflush { .. } | Operation::Rdpmc => control_policy.is_some(),
         // S4-38L9G: VERW m16 reads a 16-bit selector and checks its GDT descriptor (read-only);
-        // admitted only inside the CPL0 profile set at CPL0 in Long64 with a modeled GDTR.
-        Operation::VerwMem { .. } => {
+        // admitted only inside the CPL0 profile set in Long64 with a modeled GDTR. ADR-0023 C1: at
+        // CPL0 and CPL3, with LAR, LSL, VERR and the other VERW forms (`descriptor_query`).
+        Operation::VerwMem { .. } | Operation::DescriptorQuery { .. } => {
             control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring0
+                && matches!(
+                    context.privilege,
+                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+                )
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
         }
@@ -53022,9 +53320,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.mode == crate::memory::InstructionMode::Long64
         }
         // S2-47b: LRETQ executes only inside the CPL0 profile set, at CPL0 in Long64.
-        Operation::FarReturn | Operation::IretQ => {
+        Operation::FarReturn => {
             control_policy.is_some()
                 && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
+        // ADR-0023 C1: IRETQ at CPL0 (`iretq_cpl0`) and at CPL3 (`iretq_same_level_cpl3`).
+        Operation::IretQ => {
+            control_policy.is_some()
+                && matches!(
+                    context.privilege,
+                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+                )
                 && context.mode == crate::memory::InstructionMode::Long64
         }
         Operation::Call { .. } | Operation::Return { .. } => {
@@ -53636,7 +53943,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, store, xmm, operand),
-            instruction.opcode.byte,
             next_rip,
         );
     }
@@ -53652,7 +53958,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, destination, source),
-            instruction.opcode.byte,
             next_rip,
         );
     }
@@ -53716,7 +54021,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 dst,
                 src,
             ),
-            instruction.opcode.byte,
             next_rip,
         )?;
         // The shared tail below is bypassed, so the definedness of the flags is updated here: POPCNT
@@ -53852,7 +54156,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             context,
             (kind, xmm, operand, immediate),
             instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0),
-            instruction.opcode.byte,
             next_rip,
         )?;
         // The shared tail below is bypassed, so the definedness of the flags is updated here: PTEST and the
@@ -53876,7 +54179,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, xmm, operand, immediate),
-            instruction.opcode.byte,
             next_rip,
         );
     }
@@ -53886,14 +54188,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         memory: operand,
     } = instruction.operation
     {
-        return step_sse2_maskmov(
-            state,
-            memory,
-            context,
-            (data, mask, operand),
-            instruction.opcode.byte,
-            next_rip,
-        );
+        return step_sse2_maskmov(state, memory, context, (data, mask, operand), next_rip);
     }
     if let Operation::FisttpMemory { memory: operand } = instruction.operation {
         return step_fisttp(
@@ -53914,10 +54209,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
-        if cpl3_ac_unmodeled(state, context, address, 4) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        if let Some(fault) = alignment_check_fault(state, context, address, 4) {
+            return Ok(StepOutcome::Fault(fault));
         }
         let value = sse_ref(state).mxcsr;
         if let Err(error) = memory.write(address, context, &value.to_le_bytes()) {
@@ -53935,10 +54228,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
-        if cpl3_ac_unmodeled(state, context, address, 4) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        if let Some(fault) = alignment_check_fault(state, context, address, 4) {
+            return Ok(StepOutcome::Fault(fault));
         }
         let mut raw = [0u8; 4];
         if let Err(error) = memory.read(address, context, &mut raw) {
@@ -53963,10 +54254,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
-        if cpl3_ac_unmodeled(state, context, address, 8) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+            return Ok(StepOutcome::Fault(fault));
         }
         let mut raw = [0u8; 8];
         if let Err(error) = memory.read(address, context, &mut raw) {
@@ -53991,10 +54280,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
-        if cpl3_ac_unmodeled(state, context, address, 4) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        if let Some(fault) = alignment_check_fault(state, context, address, 4) {
+            return Ok(StepOutcome::Fault(fault));
         }
         let raw = state
             .sse
@@ -54016,10 +54303,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
-        if cpl3_ac_unmodeled(state, context, address, 8) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+            return Ok(StepOutcome::Fault(fault));
         }
         let raw = state
             .sse
@@ -66328,6 +66613,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         {
             let result = (|| -> Result<(), MemoryError> {
                 let address = operand.access_address_48(state, next_rip)?;
+                alignment_check(state, context, address, operand.size.bytes())?;
                 let replacement = state.read(register);
                 let old = memory.atomic_rmw_integer(address, context, operand.size, &mut |_| {
                     replacement
@@ -66481,7 +66767,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ds, selector, false)
+                        load_sreg(state, memory, context, SetSreg::Ds, selector, false)
                     } else {
                         load_ds_gdt_selector(state, memory, context, selector)
                     };
@@ -66507,7 +66793,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             } else {
                 let loaded =
                     if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                        load_sreg_cpl0(state, memory, context, Cpl0Sreg::Es, selector, false)
+                        load_sreg(state, memory, context, SetSreg::Es, selector, false)
                     } else {
                         load_es_gdt_selector(state, memory, context, selector)
                     };
@@ -66534,7 +66820,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 state.ss_selector = Some(0);
                 state.ss_unusable = true;
             } else {
-                match load_sreg_cpl0(state, memory, context, Cpl0Sreg::Ss, selector, false) {
+                match load_sreg(state, memory, context, SetSreg::Ss, selector, false) {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(StepOutcome::Unsupported {
@@ -66549,6 +66835,45 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
             // MOV SS opens a one-instruction interrupt shadow.
             state.sti_shadow = Some(crate::StiShadow::Blocking);
+        }
+        // ADR-0023 C1: in the set, VERW (both narrow forms), VERR, LAR and LSL at CPL0 and CPL3 run
+        // on `descriptor_query` with the CPL of the context; only ZF changes, and on success the
+        // destination of LAR/LSL.
+        Operation::VerwGdt | Operation::VerwMem { .. } | Operation::DescriptorQuery { .. }
+            if control_policy.is_some() =>
+        {
+            let (kind, dst, source) = match instruction.operation {
+                Operation::VerwGdt => (
+                    long_decode::DescriptorQueryKind::Verw,
+                    None,
+                    Operand::Register(RegisterView::low(Register::Rax, OperandSize::Word)),
+                ),
+                Operation::VerwMem { source } => (
+                    long_decode::DescriptorQueryKind::Verw,
+                    None,
+                    Operand::Memory(source),
+                ),
+                Operation::DescriptorQuery { kind, dst, source } => (kind, dst, source),
+                _ => unreachable!("the descriptor queries of the arm"),
+            };
+            let selector = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value as u16,
+                Err(error) => return report_memory_error(error),
+            };
+            const ZERO_FLAG: u64 = 1 << 6;
+            match descriptor_query(state, memory, context, kind, selector) {
+                Ok(Some(value)) => {
+                    if let Some(dst) = dst {
+                        state.write(dst, value);
+                    }
+                    state.rflags |= ZERO_FLAG;
+                }
+                Ok(None) => state.rflags &= !ZERO_FLAG,
+                Err(error) => return report_memory_error(error),
+            }
+        }
+        Operation::DescriptorQuery { .. } => {
+            unreachable!("descriptor queries are admitted only inside the CPL0 profile set")
         }
         Operation::VerwGdt => {
             let selector = state.gpr[Register::Rax as usize] as u16;
@@ -66722,7 +67047,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 Ok(value) => value as u16,
                 Err(error) => return report_memory_error(error),
             };
-            match mov_to_sreg_cpl0(state, memory, context, sreg, selector) {
+            match mov_to_sreg(state, memory, context, sreg, selector) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Ok(StepOutcome::Unsupported {
@@ -66839,11 +67164,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         // S4-38L9B/L9D: `MOV Sreg, r16` for ES, SS, DS, FS and GS. S7-32 (winload's
         // `mov %cx, %gs` with 0x2b before the kernel entry): the general MOV Sreg load of the
-        // memory and `66` forms (`mov_to_sreg_cpl0`). A null selector is stored as given (the
+        // memory and `66` forms (`mov_to_sreg`). A null selector is stored as given (the
         // register unusable, the base and any modeled cache untouched; SS takes RPL 0 only, #GP(0)
-        // otherwise); a non-null one loads its GDT descriptor (`load_sreg_cpl0`, FS/GS take the
+        // otherwise); a non-null one loads its GDT descriptor (`load_sreg`, FS/GS take the
         // 32-bit descriptor base). MOV SS opens the one-instruction interrupt shadow. A form
-        // `load_sreg_cpl0` does not model is refused with nothing changed.
+        // `load_sreg` does not model is refused with nothing changed.
         Operation::LoadFsSelectorReg { source }
         | Operation::LoadGsSelectorReg { source }
         | Operation::LoadSegmentSelectorReg { source, .. } => {
@@ -66854,7 +67179,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 _ => unreachable!("matched a register-form selector load"),
             };
             let selector = state.gpr[source as usize] as u16;
-            match mov_to_sreg_cpl0(state, memory, context, sreg, selector) {
+            match mov_to_sreg(state, memory, context, sreg, selector) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Ok(StepOutcome::Unsupported {
@@ -66867,7 +67192,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Fs, selector, false)
+                load_sreg(state, memory, context, SetSreg::Fs, selector, false)
             } else {
                 load_fs_gdt_selector(state, memory, context, selector)
             };
@@ -66887,7 +67212,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::LoadGsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             let loaded = if control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0 {
-                load_sreg_cpl0(state, memory, context, Cpl0Sreg::Gs, selector, false)
+                load_sreg(state, memory, context, SetSreg::Gs, selector, false)
             } else {
                 load_gs_gdt_selector(state, memory, context, selector)
             };
@@ -67512,7 +67837,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // the corresponding RSP increment, then forms its memory
             // destination using that post-increment state (Intel SDM Vol.2B POP).
             let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_address = match stack_access_address(old_rsp, false, destination.size) {
+            let stack_address = match stack_access_address(old_rsp, false, destination.size)
+                .and_then(|address| {
+                    alignment_check(state, context, address, destination.size.bytes())
+                        .map(|()| address)
+                }) {
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
@@ -67543,13 +67872,30 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && !instruction.prefixes.operand_override
                 && matches!(instruction.prefixes.rex, None | Some(0x48)) =>
         {
-            match popfq_cpl0(state, memory, context) {
+            match popf_set(state, memory, context, OperandSize::Qword) {
+                Ok(true) => {}
+                Ok(false) => return Ok(StepOutcome::Unsupported { opcode: 0x9d }),
+                Err(error) => return report_memory_error(error),
+            }
+        }
+        // ADR-0023 C1: POPF at CPL3 of the set (`IoplSensitive(Popf)`), 64- and 16-bit, without the
+        // CPL0 member.
+        Operation::PopFlags
+            if control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring3
+                && matches!(
+                    instruction.operand_size,
+                    OperandSize::Qword | OperandSize::Word
+                ) =>
+        {
+            match popf_set(state, memory, context, instruction.operand_size) {
                 Ok(true) => {}
                 Ok(false) => return Ok(StepOutcome::Unsupported { opcode: 0x9d }),
                 Err(error) => return report_memory_error(error),
             }
         }
         Operation::PopFlags => {
+            // Outside the set (ADR-0023 C1: the set at CPL3 takes `popf_set` above).
             // This diagnostic slice follows the native user-mode fixture
             // profile: CPL3 with IOPL=0. It models only the six status flags
             // and DF. TF and NT are unsupported because their modeled effects
@@ -67563,7 +67909,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
             let width = instruction.operand_size;
             let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_address = match stack_access_address(old_rsp, false, width) {
+            let stack_address = match stack_access_address(old_rsp, false, width).and_then(
+                |address| alignment_check(state, context, address, width.bytes()).map(|()| address),
+            ) {
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
@@ -67700,6 +68048,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if let Some(fault) =
+                alignment_check_fault(state, context, address, destination.size.bytes() as u8)
+            {
+                return Ok(StepOutcome::Fault(fault));
+            }
             // S6-20: the qword form goes through the same single `atomic_rmw_integer` entry
             // point as the dword form; a mismatch still writes the old value back.
             let observed = match memory.atomic_rmw_integer(
@@ -68013,6 +68366,20 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             return match far_return_cpl0(state, memory, context) {
                 Ok(true) => Ok(StepOutcome::Branched),
                 Ok(false) => Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                }),
+                Err(error) => report_memory_error(error),
+            };
+        }
+        // ADR-0023 C1: at CPL3 of the set IRETQ is the return to the same level (the CPL0 cell
+        // `iretq_user_entry` is not touched).
+        Operation::IretQ if context.privilege == PrivilegeLevel::Ring3 => {
+            return match iretq_same_level_cpl3(state, memory, context) {
+                Ok(IretqCpl3::Retired) => {
+                    *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+                    Ok(StepOutcome::Branched)
+                }
+                Ok(IretqCpl3::NotModeled) => Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
                 }),
                 Err(error) => report_memory_error(error),
@@ -70774,6 +71141,111 @@ fn exact_same_exponent_binary_result(
     (result.classify() == X87Binary80Class::Normal).then_some(result)
 }
 
+/// ADR-0023 C1: LAR, LSL, VERR and VERW (SDM 325462-093US Vol. 2A "LAR—Load Access Rights Byte",
+/// Vol. 2B "LSL—Load Segment Limit", "VERR/VERW—Verify a Segment for Reading or Writing"; read from
+/// the felixcloutier.com copy of the SDM text). `Ok(Some(value))`: ZF = 1 and `value` for the
+/// destination (LAR: the access rights, LSL: the limit; unused by VERR/VERW); `Ok(None)`: ZF = 0, the
+/// destination unchanged. The descriptor is read as an implicit supervisor access. The checks of the
+/// pages, in their order:
+/// - a null selector: ZF = 0 ("Checks that the segment selector is not NULL");
+/// - TI = 1: the LDT. LDTR is only ever null in the model (`LLDT` loads only a null selector), so the
+///   selector is beyond the limit of the LDT: ZF = 0;
+/// - `Offset(SRC) > descriptor table limit`: the 8 bytes of the descriptor beyond the GDT limit:
+///   ZF = 0; a non-canonical descriptor address is #GP(0) (as `verify_writable_gdt_selector`);
+/// - the type: LAR — every code and data segment and, in IA-32e mode, LDT (2), available and busy
+///   64-bit TSS (9, B), 64-bit call gate (C) (Table 3-53); LSL — code, data, LDT, 64-bit TSS (Table
+///   3-56); VERR — data or readable code; VERW — writable data. The system descriptors of IA-32e
+///   mode are 16 bytes and "bits 12:8 of the upper 4 bytes must be 0" (the footnote of Table 3-56;
+///   the model applies it, and the 16-byte bound against the GDT limit, to LAR too — a choice of the
+///   model, LAR's table has no footnote);
+/// - the visibility: unless conforming code, `CPL > DPL or RPL > DPL` is ZF = 0;
+/// - P is not checked; no Accessed bit is written.
+///
+/// LAR: bits 7:0 = 0, 11:8 type, 12 S, 14:13 DPL, 15 P, and for a wider operand 20 AVL, 21 L, 22 D/B,
+/// 23 G; bits 19:16 are undefined (the model gives 0) and 31:24 are 0: `high dword & 0x00F0_FF00`
+/// (the 16-bit destination takes the low 16 bits). LSL: the 20-bit limit, `(limit << 12) | 0xFFF`
+/// when G = 1, zero-extended (the 16-bit destination takes `AND FFFFH`).
+fn descriptor_query(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    kind: long_decode::DescriptorQueryKind,
+    selector: u16,
+) -> Result<Option<u64>, MemoryError> {
+    use long_decode::DescriptorQueryKind as Kind;
+    let Some(gdtr) = state.gdtr else {
+        return Ok(None);
+    };
+    if selector & !3 == 0 || selector & 4 != 0 {
+        return Ok(None);
+    }
+    let offset = u64::from(selector & !7);
+    if offset + 7 > u64::from(gdtr.limit) {
+        return Ok(None);
+    }
+    let address = gdtr
+        .base
+        .checked_add(offset)
+        .ok_or_else(general_protection)?;
+    let last = address.checked_add(7).ok_or_else(general_protection)?;
+    if !canonical(address) || !canonical(last) {
+        return Err(general_protection());
+    }
+    let low = memory.read_integer(address, context.descriptor_table(), OperandSize::Qword)?;
+    let access = (low >> 40) as u8;
+    let segment = access & 0x10 != 0;
+    let kind_bits = access & 0x0f;
+    let code = segment && kind_bits & 0x08 != 0;
+    let conforming = code && kind_bits & 0x04 != 0;
+    let valid = match kind {
+        Kind::Lar => segment || matches!(kind_bits, 0x2 | 0x9 | 0xb | 0xc),
+        Kind::Lsl => segment || matches!(kind_bits, 0x2 | 0x9 | 0xb),
+        // Data is always readable; code needs R (bit 1).
+        Kind::Verr => segment && (!code || kind_bits & 0x02 != 0),
+        Kind::Verw => segment && !code && kind_bits & 0x02 != 0,
+    };
+    if !valid {
+        return Ok(None);
+    }
+    let cpl = match context.privilege {
+        PrivilegeLevel::Ring0 => 0,
+        PrivilegeLevel::Ring1 => 1,
+        PrivilegeLevel::Ring2 => 2,
+        PrivilegeLevel::Ring3 => 3,
+    };
+    let dpl = (access >> 5) & 3;
+    let rpl = (selector & 3) as u8;
+    if !conforming && (cpl > dpl || rpl > dpl) {
+        return Ok(None);
+    }
+    if !segment {
+        // The 16-byte system descriptor of IA-32e mode.
+        if offset + 15 > u64::from(gdtr.limit) {
+            return Ok(None);
+        }
+        let high = memory.read_integer(
+            address.wrapping_add(8),
+            context.descriptor_table(),
+            OperandSize::Qword,
+        )?;
+        if (high >> 40) & 0x1f != 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(match kind {
+        Kind::Lar => (low >> 32) & 0x00f0_ff00,
+        Kind::Lsl => {
+            let limit = (low & 0xffff) | (((low >> 48) & 0xf) << 16);
+            if low & (1 << 55) != 0 {
+                (limit << 12) | 0xfff
+            } else {
+                limit
+            }
+        }
+        Kind::Verr | Kind::Verw => 0,
+    }))
+}
+
 fn verify_writable_gdt_selector(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
@@ -71165,6 +71637,236 @@ fn iretq_cpl0(
     Ok(IretqCpl0::Retired)
 }
 
+/// Result of [`iretq_same_level_cpl3`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IretqCpl3 {
+    /// The return to CPL3 was committed.
+    Retired,
+    /// A legal form the set does not model; the CPU state and memory are untouched.
+    NotModeled,
+}
+
+/// ADR-0023 C1: `IRETQ` (`48 CF`) at CPL3 of the set, a return to the same level (CPL3 to CPL3,
+/// e.g. the context restore of ntdll). The text it follows is the IRET page of the SDM (Vol. 2A
+/// "IRET/IRETD/IRETQ—Interrupt Return"; the copy read for this slice is the felixcloutier.com
+/// reference derived from the SDM, not the 325462-093US PDF itself, which is not in the repository):
+///
+/// ```text
+/// IA-32e-MODE:
+///     IF NT = 1
+///             THEN #GP(0);
+///     ELSE ... (* OperandSize = 64 *)
+///                                     RIP := Pop();
+///                                     CS := Pop(); (* 64-bit pop, high-order 48 bits discarded *)
+///                                     tempRFLAGS := Pop();
+///     FI;
+///     IF CS.RPL > CPL
+///             THEN GOTO RETURN-TO-OUTER-PRIVILEGE-LEVEL;
+///             ELSE
+///                         IF instruction began in 64-Bit Mode
+///                                 THEN ... (* OperandSize = 64 *)
+///                                             RSP := Pop();
+///                                             SS := Pop(); (* 64-bit pop, high-order 48 bits discarded *)
+///                         FI;
+///                         GOTO RETURN-TO-SAME-PRIVILEGE-LEVEL; FI;
+/// RETURN-TO-SAME-PRIVILEGE-LEVEL: (* PE = 1, RPL = CPL *)
+///     ... (* new mode = 64-bit mode *)
+///                         IF RIP is non-canonical
+///                                     THEN #GP(0); FI;
+///     EFLAGS (CF, PF, AF, ZF, SF, TF, DF, OF, NT) := tempEFLAGS;
+///     IF OperandSize = 32 or OperandSize = 64
+///             THEN EFLAGS(RF, AC, ID) := tempEFLAGS; FI;
+///     IF CPL ≤ IOPL
+///             THEN EFLAGS(IF) := tempEFLAGS; FI;
+///     IF CPL = 0
+///                 THEN
+///                             EFLAGS(IOPL) := tempEFLAGS;
+///                             IF OperandSize = 32 or OperandSize = 64
+///                                 THEN EFLAGS(VIF, VIP) := tempEFLAGS; FI;
+///     FI;
+/// ```
+///
+/// The descriptor checks of the loads `CS := Pop()` and `SS := Pop()` are the conditions of the
+/// "64-Bit Mode Exceptions" list of that page: #GP(0) "If the return code segment selector is
+/// NULL", "If the stack segment selector is NULL going back to CPL3 64-bit mode", "If the return
+/// instruction pointer is non-canonical"; #GP(selector) "If a segment selector index is outside its
+/// descriptor table limits", "If the segment descriptor for a code segment does not indicate it is a
+/// code segment", "If the proposed new code segment descriptor has both the D-bit and L-bit set",
+/// "If the DPL for a nonconforming-code segment is not equal to the RPL of the code segment
+/// selector", "If CPL is greater than the RPL of the code segment selector", "If the DPL of a
+/// conforming-code segment is greater than the return code segment selector RPL", "If the stack
+/// segment is not a writable data segment", "If the stack segment descriptor DPL is not equal to the
+/// RPL of the return code segment selector", "If the stack segment selector RPL is not equal to the
+/// RPL of the return code segment selector"; #SS(0) "If the return stack segment is not present";
+/// #NP(selector) "If the return code segment is not present". The order the text gives: NT, the
+/// three pops and the CS load, the two pops and the SS load, then the canonical RIP; the order inside
+/// one load is the choice of the model (the list does not order it): null, LDT (not modeled), RPL,
+/// the descriptor read, type, D ∧ L, DPL, present. TF in the image is `NotModeled` (no #DB, ISSUE-710),
+/// a CS with L = 0 (compatibility mode, ADR-0023 `NotAtCpl3`) and a TI = 1 selector too. The
+/// descriptors are read and their Accessed bits set as implicit supervisor accesses
+/// (`descriptor_table`), after every check and before the commit, as in [`iretq_cpl0`]; the frame is
+/// read with the rights of the context (CPL3: user).
+fn iretq_same_level_cpl3(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<IretqCpl3, MemoryError> {
+    const IF: u64 = 1 << 9;
+    // CF, PF, AF, ZF, SF, TF, DF, OF, NT and AC, ID (TF is refused below). RF: the pseudocode loads
+    // it from the frame; the model has no #DB and nothing clears RF after the next instruction, so
+    // it is cleared here, as `iretq_cpl0` does on its return to CPL3 (ISSUE-723).
+    const LOADED: u64 = crate::POPFQ_INTEGER_FLAGS | (1 << 8) | (1 << 14) | (1 << 18) | (1 << 21);
+    const CPL: u16 = 3;
+    let Some(gdtr) = state.gdtr else {
+        return Ok(IretqCpl3::NotModeled);
+    };
+    if state.ss_cache.is_none()
+        || state.ss_selector.is_none()
+        || state.sti_shadow != Some(crate::StiShadow::Clear)
+        || state.rflags & IRETQ_UNMODELED_FLAGS != 0
+    {
+        return Ok(IretqCpl3::NotModeled);
+    }
+    if state.rflags & (1 << 14) != 0 {
+        return Err(general_protection());
+    }
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    // The frame pops are stack accesses: a misaligned RSP is the #AC of the first (ADR-0023 decision 4).
+    let state_view = &*state;
+    let pop = |memory: &mut _, index: u64| -> Result<u64, MemoryError> {
+        let address =
+            stack_access_address(old_rsp.wrapping_add(8 * index), false, OperandSize::Qword)?;
+        alignment_check(state_view, context, address, 8)?;
+        GuestMemory::read_integer(memory, address, context, OperandSize::Qword)
+    };
+    let target = pop(memory, 0)?;
+    let cs_selector = pop(memory, 1)? as u16;
+    let new_rflags = pop(memory, 2)?;
+
+    // CS := Pop().
+    if cs_selector & 0xfffc == 0 {
+        return Err(general_protection());
+    }
+    if cs_selector & 4 != 0 {
+        return Ok(IretqCpl3::NotModeled);
+    }
+    let rpl = cs_selector & 3;
+    if rpl < CPL {
+        return Err(selector_fault(13, cs_selector));
+    }
+    let (cs_address, cs_bytes) = read_gdt_raw_descriptor(gdtr, memory, context, cs_selector)?;
+    let cs_access = cs_bytes[5];
+    let cs_flags = cs_bytes[6] >> 4;
+    if cs_access & 0x18 != 0x18 {
+        return Err(selector_fault(13, cs_selector));
+    }
+    if cs_flags & 0x6 == 0x6 {
+        return Err(selector_fault(13, cs_selector));
+    }
+    let cs_dpl = u16::from((cs_access >> 5) & 3);
+    let conforming = cs_access & 0x04 != 0;
+    if (conforming && cs_dpl > rpl) || (!conforming && cs_dpl != rpl) {
+        return Err(selector_fault(13, cs_selector));
+    }
+    if cs_access & 0x80 == 0 {
+        return Err(selector_fault(11, cs_selector));
+    }
+    if cs_flags & 0x2 == 0 {
+        return Ok(IretqCpl3::NotModeled);
+    }
+
+    // RSP := Pop(); SS := Pop().
+    let new_rsp = pop(memory, 3)?;
+    let ss_selector = pop(memory, 4)? as u16;
+    if ss_selector & 0xfffc == 0 {
+        return Err(general_protection());
+    }
+    if ss_selector & 4 != 0 {
+        return Ok(IretqCpl3::NotModeled);
+    }
+    if ss_selector & 3 != rpl {
+        return Err(selector_fault(13, ss_selector));
+    }
+    let (ss_address, ss_bytes) = read_gdt_raw_descriptor(gdtr, memory, context, ss_selector)?;
+    let ss_access = ss_bytes[5];
+    // A writable data segment: S = 1, code = 0, W = 1.
+    if ss_access & 0x1a != 0x12 {
+        return Err(selector_fault(13, ss_selector));
+    }
+    if u16::from((ss_access >> 5) & 3) != rpl {
+        return Err(selector_fault(13, ss_selector));
+    }
+    if ss_access & 0x80 == 0 {
+        return Err(MemoryError::Architectural(ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+
+    // RETURN-TO-SAME-PRIVILEGE-LEVEL.
+    if !canonical(target) {
+        return Err(general_protection());
+    }
+    if new_rflags & POPFQ_CPL0_TF != 0 {
+        return Ok(IretqCpl3::NotModeled);
+    }
+    // A conforming CS with DPL < 3 passes the checks above (DPL <= RPL) but leaves a state the CPL3
+    // entry does not admit (CS cache DPL 3): not modeled, nothing changed (as `iretq_cpl0`, S4-39c).
+    if cs_dpl != 3 {
+        return Ok(IretqCpl3::NotModeled);
+    }
+
+    // The Accessed bits, after every check (implicit supervisor writes of whole qwords).
+    for (address, bytes) in [(cs_address, cs_bytes), (ss_address, ss_bytes)] {
+        if bytes[5] & 0x01 == 0 {
+            let mut accessed = bytes;
+            accessed[5] |= 0x01;
+            memory.write_integer(
+                address,
+                context.descriptor_table(),
+                OperandSize::Qword,
+                u64::from_le_bytes(accessed),
+            )?;
+        }
+    }
+
+    let iopl = (state.rflags >> 12) & 3;
+    let loaded = LOADED | if u64::from(CPL) <= iopl { IF } else { 0 };
+    state.rflags = ((state.rflags & !loaded) | (new_rflags & loaded)) & !(1 << 16) | 2;
+    state.rip = target;
+    // A retired IRETQ ends NMI blocking (S6-12b), as in `iretq_cpl0`.
+    state.nmi_blocked = false;
+    state.cs_selector = Some(cs_selector);
+    state.cs_cache = Some(crate::state::CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: cs_access | 1,
+        flags: cs_flags,
+    });
+    let limit20 = u32::from(ss_bytes[0])
+        | (u32::from(ss_bytes[1]) << 8)
+        | (u32::from(ss_bytes[6] & 0x0f) << 16);
+    let ss_flags = ss_bytes[6] >> 4;
+    state.ss_selector = Some(ss_selector);
+    state.ss_cache = Some(crate::state::DataSegmentDescriptorCache {
+        base: u32::from(ss_bytes[2])
+            | (u32::from(ss_bytes[3]) << 8)
+            | (u32::from(ss_bytes[4]) << 16)
+            | (u32::from(ss_bytes[7]) << 24),
+        limit: if ss_flags & 8 != 0 {
+            (limit20 << 12) | 0x0fff
+        } else {
+            limit20
+        },
+        access: ss_access | 1,
+        flags: ss_flags,
+    });
+    state.ss_unusable = false;
+    state.gpr[Register::Rsp as usize] = new_rsp;
+    Ok(IretqCpl3::Retired)
+}
+
 /// S4-39b: DS, ES, FS and GS may stay untouched by a committed return to CPL3 only when each is
 /// a null selector or has a modeled cache with DPL 3 (a register whose DPL is below the new CPL
 /// would be nulled by the SDM; that is not modeled, so the commit is refused).
@@ -71333,6 +72035,9 @@ fn store_pseudo_descriptor_qwords(
         origin: crate::memory::AccessOrigin::Explicit,
         ..context
     };
+    // ADR-0023 decision 4: SGDT/SIDT at CPL3 check 4-byte alignment of the operand start (Table
+    // 7-7), once for the ten bytes, not for each of the two overlapping qword writes.
+    alignment_check(state, context, address, 4)?;
     let mut head = [0; 8];
     head[..2].copy_from_slice(&limit.to_le_bytes());
     head[2..].copy_from_slice(&base.to_le_bytes()[..6]);
@@ -71370,9 +72075,9 @@ fn load_idtr(
     Ok(())
 }
 
-/// Segment register loaded by [`load_sreg_cpl0`].
+/// Segment register loaded by [`load_sreg`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Cpl0Sreg {
+enum SetSreg {
     Ss,
     Ds,
     Es,
@@ -71381,10 +72086,14 @@ enum Cpl0Sreg {
 }
 
 /// `MOV Sreg, AX` (`8E /r`) with a nonzero GDT selector inside the CPL0 profile set (S4-38L6c),
-/// at CPL0 in 64-bit mode. Checks follow SDM Vol.2 "MOV - Move to Segment Register" and Vol.3
-/// 3.4.3 / 5.5 from memory (the SDM text is not in the repository):
+/// at CPL0 in 64-bit mode, and since ADR-0023 C1 at CPL3 (the CPL of the context; at CPL0 the
+/// checks are those of S4-38L6c byte for byte). Checks follow SDM Vol.2 "MOV - Move to Segment
+/// Register" (Operation, protected mode: "IF SS is loaded ... IF segment selector RPL ≠ CPL or
+/// segment is not a writable data segment or DPL ≠ CPL THEN #GP(selector)", "IF DS, ES, FS, or GS is
+/// loaded with non-NULL selector ... IF segment is not a data or readable code segment or ((segment
+/// is a data or nonconforming code segment) and ((RPL > DPL) or (CPL > DPL))) THEN #GP(selector)"):
 ///
-/// * SS: RPL must equal CPL (0) and the descriptor must be a writable data segment with
+/// * SS: RPL must equal CPL and the descriptor must be a writable data segment with
 ///   DPL = CPL, otherwise #GP(selector); a not-present descriptor is #SS(selector).
 /// * DS/ES/FS/GS: the descriptor must be a data segment or a readable code segment (#GP(selector)
 ///   otherwise); data and non-conforming code need DPL >= max(CPL, RPL) (#GP(selector)); a
@@ -71397,11 +72106,11 @@ enum Cpl0Sreg {
 /// error is a guest fault or a memory error. In every non-`Ok(true)` case the CPU state is
 /// untouched. The only memory write is the accessed bit, written back as one qword after every
 /// check has passed (the board adapter writes only whole qwords).
-fn load_sreg_cpl0(
+fn load_sreg(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
-    register: Cpl0Sreg,
+    register: SetSreg,
     selector: u16,
     initialize_cache: bool,
 ) -> Result<bool, MemoryError> {
@@ -71409,18 +72118,24 @@ fn load_sreg_cpl0(
         return Ok(false);
     };
     let cache_modeled = match register {
-        Cpl0Sreg::Ss => state.ss_cache.is_some() && state.ss_selector.is_some(),
-        Cpl0Sreg::Ds => state.ds_cache.is_some(),
-        Cpl0Sreg::Es => state.es_cache.is_some(),
-        Cpl0Sreg::Fs => state.fs_cache.is_some(),
-        Cpl0Sreg::Gs => state.gs_cache.is_some(),
+        SetSreg::Ss => state.ss_cache.is_some() && state.ss_selector.is_some(),
+        SetSreg::Ds => state.ds_cache.is_some(),
+        SetSreg::Es => state.es_cache.is_some(),
+        SetSreg::Fs => state.fs_cache.is_some(),
+        SetSreg::Gs => state.gs_cache.is_some(),
     };
     if (!cache_modeled && !initialize_cache) || selector & 0xfffc == 0 || selector & 4 != 0 {
         return Ok(false);
     }
-    // CPL is 0 inside the set; the SS selector must carry RPL = CPL.
+    // ADR-0023 C1: the CPL of the context (0 or 3 in the set); the SS selector must carry RPL = CPL.
+    let cpl = match context.privilege {
+        PrivilegeLevel::Ring0 => 0,
+        PrivilegeLevel::Ring1 => 1,
+        PrivilegeLevel::Ring2 => 2,
+        PrivilegeLevel::Ring3 => 3,
+    };
     let rpl = (selector & 3) as u8;
-    if register == Cpl0Sreg::Ss && rpl != 0 {
+    if register == SetSreg::Ss && rpl != cpl {
         return Err(selector_fault(13, selector));
     }
     let (address, raw) = read_gdt_raw_descriptor(gdtr, memory, context, selector)?;
@@ -71433,9 +72148,9 @@ fn load_sreg_cpl0(
     if system {
         return Err(selector_fault(13, selector));
     }
-    if register == Cpl0Sreg::Ss {
-        // Writable data segment with DPL = CPL = 0.
-        if code || access & 0x02 == 0 || dpl != 0 {
+    if register == SetSreg::Ss {
+        // Writable data segment with DPL = CPL.
+        if code || access & 0x02 == 0 || dpl != cpl {
             return Err(selector_fault(13, selector));
         }
         if !present {
@@ -71446,7 +72161,7 @@ fn load_sreg_cpl0(
         if code && access & 0x02 == 0 {
             return Err(selector_fault(13, selector));
         }
-        if !conforming && dpl < rpl {
+        if !conforming && dpl < rpl.max(cpl) {
             return Err(selector_fault(13, selector));
         }
         if !present {
@@ -71487,28 +72202,28 @@ fn load_sreg_cpl0(
         flags,
     };
     match register {
-        Cpl0Sreg::Ss => {
+        SetSreg::Ss => {
             state.ss_selector = Some(selector);
             state.ss_cache = Some(data_cache);
             state.ss_unusable = false;
         }
-        Cpl0Sreg::Ds => {
+        SetSreg::Ds => {
             state.ds_selector = selector;
             state.ds_cache = Some(data_cache);
             state.ds_unusable = false;
         }
-        Cpl0Sreg::Es => {
+        SetSreg::Es => {
             state.es_selector = selector;
             state.es_cache = Some(data_cache);
             state.es_unusable = false;
         }
-        Cpl0Sreg::Fs => {
+        SetSreg::Fs => {
             state.fs_selector = selector;
             state.fs_base = u64::from(base);
             state.fs_cache = Some(fs_gs_cache);
             state.fs_unusable = false;
         }
-        Cpl0Sreg::Gs => {
+        SetSreg::Gs => {
             state.gs_selector = selector;
             state.gs_base = u64::from(base);
             state.gs_cache = Some(fs_gs_cache);
@@ -71523,8 +72238,12 @@ fn load_sreg_cpl0(
 /// active shadow is not modeled) and TF = 0 (the single-step trap is not modeled). The selector
 /// rules of each form are checked by the form.
 fn mov_ss_state_admitted(state: &LongModeState, context: AccessContext, in_set: bool) -> bool {
+    // ADR-0023 C1: CPL3 of the set too (the CPL3 loads of `mov_to_sreg`).
     in_set
-        && context.privilege == PrivilegeLevel::Ring0
+        && matches!(
+            context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        )
         && state.ss_cache.is_some()
         && state.ss_selector.is_some()
         && state.sti_shadow == Some(crate::StiShadow::Clear)
@@ -71532,14 +72251,14 @@ fn mov_ss_state_admitted(state: &LongModeState, context: AccessContext, in_set: 
 }
 
 /// S7-32: `MOV Sreg, m16` (`8E`) at CPL0 in 64-bit mode for ES (0), SS (2), DS (3), FS (4) and
-/// GS (5). A non-null selector is [`load_sreg_cpl0`]. A null selector (index 0, TI 0): DS/ES/FS/GS
+/// GS (5). A non-null selector is [`load_sreg`]. A null selector (index 0, TI 0): DS/ES/FS/GS
 /// keep the selector as given (RPL included), become unusable and keep any base and cache, as the
 /// bounded null loads of this set do. Deviation (recorded as a known issue): Intel processors clear
 /// the hidden FS/GS base on a null selector load in 64-bit mode; this set keeps it (the AMD
 /// behaviour), the convention of its existing null loads; SS accepts only RPL = CPL = 0 (SDM "MOV": a null SS with
 /// RPL != CPL is #GP(0); 64-bit mode admits the null SS at CPL < 3). MOV SS opens the
-/// one-instruction interrupt shadow. `Ok(false)`: a form `load_sreg_cpl0` does not model.
-fn mov_to_sreg_cpl0(
+/// one-instruction interrupt shadow. `Ok(false)`: a form `load_sreg` does not model.
+fn mov_to_sreg(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -71547,17 +72266,19 @@ fn mov_to_sreg_cpl0(
     selector: u16,
 ) -> Result<bool, MemoryError> {
     let register = match sreg {
-        0 => Cpl0Sreg::Es,
-        2 => Cpl0Sreg::Ss,
-        3 => Cpl0Sreg::Ds,
-        4 => Cpl0Sreg::Fs,
-        5 => Cpl0Sreg::Gs,
+        0 => SetSreg::Es,
+        2 => SetSreg::Ss,
+        3 => SetSreg::Ds,
+        4 => SetSreg::Fs,
+        5 => SetSreg::Gs,
         _ => return Ok(false),
     };
     if selector & 0xfffc == 0 {
         match register {
-            Cpl0Sreg::Ss => {
-                if selector & 3 != 0 {
+            SetSreg::Ss => {
+                // ADR-0023 C1: a null SS is legal only at CPL < 3 with RPL = CPL (SDM "MOV",
+                // 64-bit mode); at CPL3 it is #GP(0).
+                if selector & 3 != 0 || context.privilege != PrivilegeLevel::Ring0 {
                     return Err(MemoryError::Architectural(ArchitecturalFault {
                         vector: 13,
                         error_code: Some(0),
@@ -71567,30 +72288,65 @@ fn mov_to_sreg_cpl0(
                 state.ss_selector = Some(selector);
                 state.ss_unusable = true;
             }
-            Cpl0Sreg::Es => {
+            SetSreg::Es => {
                 state.es_selector = selector;
                 state.es_unusable = true;
             }
-            Cpl0Sreg::Ds => {
+            SetSreg::Ds => {
                 state.ds_selector = selector;
                 state.ds_unusable = true;
             }
-            Cpl0Sreg::Fs => {
+            SetSreg::Fs => {
                 state.fs_selector = selector;
                 state.fs_unusable = true;
             }
-            Cpl0Sreg::Gs => {
+            SetSreg::Gs => {
                 state.gs_selector = selector;
                 state.gs_unusable = true;
             }
         }
-    } else if !load_sreg_cpl0(state, memory, context, register, selector, false)? {
+    } else if !load_sreg(state, memory, context, register, selector, false)? {
         return Ok(false);
     }
-    if register == Cpl0Sreg::Ss {
+    if register == SetSreg::Ss {
         state.sti_shadow = Some(crate::StiShadow::Blocking);
     }
     Ok(true)
+}
+
+/// ADR-0023 C1: the I/O permission bit map check of an I/O access at CPL > IOPL (SDM 325462-093US
+/// Vol. 1 §20.5.2 "I/O Permission Bit Map"). `None`: TR is not modeled. Otherwise the 16-bit I/O map
+/// base at offset 0x66 of the TSS and then the two map bytes at `base + IoMapBase + port / 8` are read
+/// as implicit supervisor accesses (`AccessContext::descriptor_table`; the processor always reads two
+/// bytes, which is why the map ends with an 0xFF byte); `Some(false)` when a byte the check needs is
+/// beyond the TSS limit or a bit of `port .. port + width - 1` is set, `Some(true)` when all are clear.
+/// A fault of a read is returned as the error (its #PF precedes the #GP(0)).
+fn io_permitted_by_tss(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    port: u16,
+    width: u8,
+) -> Result<Option<bool>, MemoryError> {
+    let Some(tr) = state.tr else {
+        return Ok(None);
+    };
+    let limit = u64::from(tr.limit);
+    let supervisor = context.descriptor_table();
+    if 0x66 + 1 > limit {
+        return Ok(Some(false));
+    }
+    let mut base = [0u8; 2];
+    memory.read(tr.base.wrapping_add(0x66), supervisor, &mut base)?;
+    let map_offset = u64::from(u16::from_le_bytes(base)) + u64::from(port / 8);
+    if map_offset + 1 > limit {
+        return Ok(Some(false));
+    }
+    let mut map = [0u8; 2];
+    memory.read(tr.base.wrapping_add(map_offset), supervisor, &mut map)?;
+    let bits = u16::from_le_bytes(map) >> (port % 8);
+    let mask = (1u16 << width) - 1;
+    Ok(Some(bits & mask == 0))
 }
 
 /// `LTR r/m16` register form (`0F 00 /3`, mod = 11) inside the CPL0 profile set (S4-38L7am), at
@@ -72285,6 +73041,7 @@ fn push_stack_value(
     size: OperandSize,
 ) -> Result<(), MemoryError> {
     let address = stack_access_address(state.gpr[Register::Rsp as usize], true, size)?;
+    alignment_check(state, context, address, size.bytes())?;
     memory.write_integer(address, context, size, value)?;
     state.gpr[Register::Rsp as usize] = address;
     Ok(())
@@ -72305,22 +73062,60 @@ fn push_stack_flags(
     push_stack_value(state, memory, context, value, size)
 }
 
-fn popfq_cpl0(
+/// `POPF` in the CPL0 set: `Ok(false)` is a form the set does not model (TF set now or in the image;
+/// at CPL0 also an STI/MOV SS shadow that is not clear), with nothing changed.
+///
+/// - CPL0 (S2-50, `with_popf_cpl0`, `POPFQ` only): loads `POPFQ_CPL0_FLAGS` (the status flags, DF,
+///   IF, IOPL, NT, AC, ID); RF, VM, VIF, VIP, bit 1 and the reserved bits are kept (unchanged since
+///   S2-50; SDM: RF is cleared, KNOWN_ISSUES ISSUE-720).
+/// - CPL3 (ADR-0023 C1, class `IoplSensitive(Popf)`; SDM 325462-093US Vol. 2B "POPF/POPFD/POPFQ",
+///   Operation, CPL > 0): the status flags, DF and NT, and for the 64-bit form AC and ID, load from the
+///   image; IF only if CPL <= IOPL; IOPL never; VIP, VIF, VM and the reserved bits are unaffected; RF
+///   is cleared for both widths (footnote 1: "RF is always zero after the execution of POPF"); the
+///   16-bit form (`66 9D`) pops only FLAGS[15:0]. No #GP. The member `with_popf_cpl0` guards the
+///   IF/IOPL semantics of CPL0 only. Choice of the model for the 16-bit form at CPL > 0: IF changes
+///   only if CPL <= IOPL (the Description), not by the letter of Operation (which names only IOPL).
+fn popf_set(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
+    size: OperandSize,
 ) -> Result<bool, MemoryError> {
-    if state.rflags & POPFQ_CPL0_TF != 0 || state.sti_shadow != Some(crate::StiShadow::Clear) {
+    const IF: u64 = 1 << 9;
+    const RF: u64 = 1 << 16;
+    let cpl3 = context.privilege != PrivilegeLevel::Ring0;
+    if state.rflags & POPFQ_CPL0_TF != 0
+        || (!cpl3 && state.sti_shadow != Some(crate::StiShadow::Clear))
+    {
         return Ok(false);
     }
     let old_rsp = state.gpr[Register::Rsp as usize];
-    let stack_address = stack_access_address(old_rsp, false, OperandSize::Qword)?;
-    let value = memory.read_integer(stack_address, context, OperandSize::Qword)?;
+    let stack_address = stack_access_address(old_rsp, false, size)?;
+    alignment_check(state, context, stack_address, size.bytes())?;
+    let value = memory.read_integer(stack_address, context, size)?;
     if value & POPFQ_CPL0_TF != 0 {
         return Ok(false);
     }
-    state.rflags = (state.rflags & !POPFQ_CPL0_FLAGS) | (value & POPFQ_CPL0_FLAGS);
-    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+    let loaded = if cpl3 {
+        let image = if size == OperandSize::Word {
+            0xffff
+        } else {
+            u64::MAX
+        };
+        let iopl = (state.rflags >> 12) & 3;
+        // CPL3 <= IOPL only for IOPL = 3.
+        let interrupt_flag = if iopl == 3 { IF } else { 0 };
+        (crate::POPFQ_INTEGER_FLAGS | (1 << 14) | (1 << 18) | (1 << 21) | interrupt_flag) & image
+    } else {
+        POPFQ_CPL0_FLAGS
+    };
+    let mut rflags = (state.rflags & !loaded) | (value & loaded);
+    // CPL3: "RF is always zero after the execution of POPF" (footnote 1 of the page), both widths.
+    if cpl3 {
+        rflags &= !RF;
+    }
+    state.rflags = rflags;
+    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(size.bytes() as u64);
     Ok(true)
 }
 
@@ -72332,6 +73127,7 @@ fn leave_stack_frame(
     // Read the old [RBP] first. A stack or page fault commits neither register.
     let old_rbp = state.gpr[Register::Rbp as usize];
     let address = stack_access_address(old_rbp, false, OperandSize::Qword)?;
+    alignment_check(state, context, address, 8)?;
     let value = memory.read_integer(address, context, OperandSize::Qword)?;
     state.gpr[Register::Rsp as usize] = old_rbp.wrapping_add(8);
     state.gpr[Register::Rbp as usize] = value;
@@ -72352,6 +73148,7 @@ fn xadd_memory_atomic(
 ) -> Result<(), MemoryError> {
     let addend = state.read(source);
     let address = destination.access_address_48(state, next_rip)?;
+    alignment_check(state, context, address, destination.size.bytes())?;
     let old = memory.atomic_rmw_integer(address, context, OperandSize::Qword, &mut |old| {
         old.wrapping_add(addend)
     })?;
@@ -72453,16 +73250,15 @@ fn sse128_move_parts(operation: Operation) -> Option<(Sse128MoveKind, bool, u8, 
 /// 4. The 16-byte range must be canonical; then one `read` or `write` of 16 bytes (a memory fault,
 ///    `#PF` included, is the backend's result and leaves the CPU state untouched).
 ///
-/// The alignment-check exception `#AC` is not modeled. The SDM gives no #AC row for Type 1 and
-/// Type 4 and notes that "treatment of #AC varies" for MOVUPS/MOVUPD, so an unaligned MOVUPS,
-/// MOVUPD or MOVDQU at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is
-/// `Unsupported` instead of guessed.
+/// Alignment check (ADR-0023 C1, decision 4): a 16-byte operand is never #AC-checked (the SDM gives no
+/// #AC row for Type 1 and Type 4 and notes that "treatment of #AC varies" for MOVUPS/MOVUPD; the
+/// physical oracle runs them without #AC); an operand of 2, 4 or 8 bytes that is not aligned to its
+/// size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is #AC(0) before any access.
 fn step_sse128_memory_move(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (kind, store, xmm, operand): (Sse128MoveKind, bool, u8, MemoryOperand),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     const CR0_EM: u64 = 1 << 2;
@@ -72498,13 +73294,8 @@ fn step_sse128_memory_move(
     if let Err(error) = operand.access_range_address_48(state, next_rip, 16) {
         return report_memory_error(error);
     }
-    if !aligned
-        && context.privilege == PrivilegeLevel::Ring3
-        && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
-    {
-        return Ok(StepOutcome::Unsupported { opcode });
-    }
+    // ADR-0023 decision 4: a 16-byte unaligned form (MOVUPS, MOVUPD, MOVDQU, LDDQU) has no #AC
+    // (Vol. 2A §2.5, Type 4: "For 2, 4, or 8 byte memory access if alignment checking is enabled").
     let sse = state
         .sse
         .as_mut()
@@ -72541,17 +73332,14 @@ fn step_sse128_memory_move(
 /// 4. The whole source range (16 bytes, 8 for MOVDDUP) must be canonical; then one `read` (a memory
 ///    fault, `#PF` included, is the backend's result and leaves the CPU state untouched).
 ///
-/// The alignment-check exception `#AC` is not modeled: a source that is not aligned to its access
-/// size (8 bytes for MOVDDUP, 16 for the rest) at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not
-/// carried) is `Unsupported`, as in the S2-34 moves, instead of guessed. For LDDQU this follows the SDM
-/// note on its alignment (Vol. 2A p. 3-538) and the 16-byte mask is the model's choice; for MOVDDUP
-/// (Table 2-22) the SDM defines `#AC(0)` at CPL3, so refusing is a conservative model choice.
+/// Alignment check (ADR-0023 C1, decision 4): the 8-byte source of MOVDDUP (Table 2-22) that is not
+/// 8-byte aligned at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is #AC(0) before the
+/// read; the 16-byte sources (LDDQU, the 16-byte permutes) are never #AC-checked, as in the S2-34 moves.
 fn step_sse3_permute(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (kind, destination, source): (Sse3PermuteKind, u8, Sse3Source),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     const CR0_EM: u64 = 1 << 2;
@@ -72597,13 +73385,11 @@ fn step_sse3_permute(
             if let Err(error) = operand.access_range_address_48(state, next_rip, length) {
                 return report_memory_error(error);
             }
-            let alignment_mask = kind.memory_bytes() - 1;
-            if address & alignment_mask != 0
-                && context.privilege == PrivilegeLevel::Ring3
-                && state.rflags & (1 << 18) != 0
-                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+            // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+            if let Some(fault) =
+                alignment_check_fault(state, context, address, sse_alignment_requirement(length))
             {
-                return Ok(StepOutcome::Unsupported { opcode });
+                return Ok(StepOutcome::Fault(fault));
             }
             if let Err(error) = memory.read(address, context, &mut raw[..length]) {
                 return report_memory_error(error);
@@ -72888,14 +73674,13 @@ fn step_ssse3_int(
 /// memory operand, `#GP(0)` for a 16-byte operand that is not 16-byte aligned (the packed forms; the 2-, 4- and 8-byte
 /// operands of the moves have no alignment rule), the range check and then the access; a memory fault changes
 /// nothing. A misaligned 2/4/8-byte operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1 or CR0 not carried) is
-/// `Unsupported` (`#AC` is not modeled), as in the S2-55 forms. No flag and no MXCSR bit changes, no SIMD floating-point
+/// #AC(0) before the access (ADR-0023 C1, decision 4). No flag and no MXCSR bit changes, no SIMD floating-point
 /// exception is possible.
 fn step_sse2_int(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (kind, xmm, operand, immediate): (Sse2IntKind, u8, Sse41Operand, u8),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     if let Some(outcome) = sse2_gate_fault(state) {
@@ -72914,13 +73699,11 @@ fn step_sse2_int(
         if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
             return report_memory_error(error);
         }
-        if length > 1
-            && address & (length as u64 - 1) != 0
-            && context.privilege == PrivilegeLevel::Ring3
-            && state.rflags & (1 << 18) != 0
-            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+        if let Some(fault) =
+            alignment_check_fault(state, context, address, sse_alignment_requirement(length))
         {
-            return Ok(StepOutcome::Unsupported { opcode });
+            return Ok(StepOutcome::Fault(fault));
         }
     }
     let general = |encoding: u8| {
@@ -73066,7 +73849,6 @@ fn step_sse2_maskmov(
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (data, mask, operand): (u8, u8, MemoryOperand),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     if let Some(outcome) = sse2_gate_fault(state) {
@@ -73080,14 +73862,10 @@ fn step_sse2_maskmov(
         return report_memory_error(error);
     }
     // The alignment check of the physical oracle for this form is on 8 bytes (the 16-byte store is checked as two
-    // quadwords); #AC is not modeled, so a misaligned operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1 or CR0 not
-    // carried) is `Unsupported`, before any memory access, as in the other S2-39 forms.
-    if address & 7 != 0
-        && context.privilege == PrivilegeLevel::Ring3
-        && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
-    {
-        return Ok(StepOutcome::Unsupported { opcode });
+    // quadwords): ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only) takes
+    // #AC(0) on 8 bytes, before any memory access (a point of the oracle check, ISSUE-724).
+    if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+        return Ok(StepOutcome::Fault(fault));
     }
     let sse = state
         .sse
@@ -73245,8 +74023,8 @@ fn step_emms(state: &mut LongModeState, opcode: u8, next_rip: u64) -> StepOutcom
 /// instruction does what every MMX instruction except EMMS does to the x87 state: TOP becomes 0, the whole
 /// tag word becomes valid, and the destination register MMd gets the 64-bit result with 0xFFFF in bits
 /// 79:64; the other registers keep their payloads (a source register is not rewritten). No flag, MXCSR or
-/// XMM state changes. `#AC` is not modeled: an 8-byte operand that is not 8-byte aligned at CPL3 with
-/// RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the S2-54 slice C forms.
+/// XMM state changes. An 8-byte operand that is not 8-byte aligned at CPL3 with RFLAGS.AC = 1 (and
+/// CR0.AM = 1, or CR0 not carried) is #AC(0) before the read (ADR-0023 C1, decision 4).
 fn step_mmx_ssse3(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -73276,12 +74054,9 @@ fn step_mmx_ssse3(
             if let Err(error) = operand.access_range_address_48(state, next_rip, raw.len()) {
                 return report_memory_error(error);
             }
-            if address & 7 != 0
-                && context.privilege == PrivilegeLevel::Ring3
-                && state.rflags & (1 << 18) != 0
-                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
-            {
-                return Ok(StepOutcome::Unsupported { opcode });
+            // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+            if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             if let Err(error) = memory.read(address, context, &mut raw) {
                 return report_memory_error(error);
@@ -73301,26 +74076,22 @@ fn step_mmx_ssse3(
 
 /// S2-39 (MMX): the linear address of a memory operand of an MMX form, validated over its whole size
 /// ([crate::long_decode::MemoryOperand::access_address_48]: a non-canonical byte is #GP(0), #SS(0) for an
-/// RSP/RBP base). `#AC` is not modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1
-/// (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in [`step_mmx_ssse3`]. The error is the outcome
-/// the caller returns.
+/// RSP/RBP base). An operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or
+/// CR0 not carried) is #AC(0) (ADR-0023 C1, decision 4). The error is the outcome the caller returns.
 fn mmx_memory_address(
     state: &LongModeState,
     context: AccessContext,
     operand: MemoryOperand,
-    opcode: u8,
     next_rip: u64,
 ) -> Result<u64, Result<StepOutcome, MemoryError>> {
     let address = match operand.access_address_48(state, next_rip) {
         Ok(address) => address,
         Err(error) => return Err(report_memory_error(error)),
     };
-    if address & (operand.size.bytes() as u64 - 1) != 0
-        && context.privilege == PrivilegeLevel::Ring3
-        && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+    if let Some(fault) = alignment_check_fault(state, context, address, operand.size.bytes() as u8)
     {
-        return Err(Ok(StepOutcome::Unsupported { opcode }));
+        return Err(Ok(StepOutcome::Fault(fault)));
     }
     Ok(address)
 }
@@ -73332,7 +74103,6 @@ fn mmx_source_qword(
     memory: &mut impl GuestMemory,
     context: AccessContext,
     source: Sse3Source,
-    opcode: u8,
     next_rip: u64,
 ) -> Result<[u8; 8], Result<StepOutcome, MemoryError>> {
     match source {
@@ -73343,7 +74113,7 @@ fn mmx_source_qword(
             .mmx_register(index)
             .expect("the decoder gives MM0..MM7")),
         Sse3Source::Memory(operand) => {
-            let address = mmx_memory_address(state, context, operand, opcode, next_rip)?;
+            let address = mmx_memory_address(state, context, operand, next_rip)?;
             let mut raw = [0u8; 8];
             memory
                 .read(address, context, &mut raw)
@@ -73368,7 +74138,7 @@ fn step_mmx_int(
     if let Some(outcome) = mmx_entry_fault(state, opcode) {
         return Ok(outcome);
     }
-    let raw = match mmx_source_qword(state, memory, context, source, opcode, next_rip) {
+    let raw = match mmx_source_qword(state, memory, context, source, next_rip) {
         Ok(raw) => raw,
         Err(outcome) => return outcome,
     };
@@ -73426,12 +74196,10 @@ fn step_mmx_movd(
         Operand::Immediate(_) => unreachable!("the decoder gives a register or memory operand"),
     };
     let address = match operand {
-        Operand::Memory(operand) => {
-            match mmx_memory_address(state, context, operand, opcode, next_rip) {
-                Ok(address) => Some(address),
-                Err(outcome) => return outcome,
-            }
-        }
+        Operand::Memory(operand) => match mmx_memory_address(state, context, operand, next_rip) {
+            Ok(address) => Some(address),
+            Err(outcome) => return outcome,
+        },
         _ => None,
     };
     let mut bytes = [0u8; 8];
@@ -73493,7 +74261,7 @@ fn step_mmx_movq(
         return Ok(outcome);
     }
     if to_mmx {
-        let raw = match mmx_source_qword(state, memory, context, other, opcode, next_rip) {
+        let raw = match mmx_source_qword(state, memory, context, other, next_rip) {
             Ok(raw) => raw,
             Err(outcome) => return outcome,
         };
@@ -73514,7 +74282,7 @@ fn step_mmx_movq(
                 x87.write_mmx_register(index, value);
             }
             Sse3Source::Memory(operand) => {
-                let address = match mmx_memory_address(state, context, operand, opcode, next_rip) {
+                let address = match mmx_memory_address(state, context, operand, next_rip) {
                     Ok(address) => address,
                     Err(outcome) => return outcome,
                 };
@@ -73965,16 +74733,15 @@ fn sse41_vector_result(
 /// 4. The whole operand range must be canonical; then one `read` or (PEXTR*) one `write` of the operand
 ///    width (a memory fault, `#PF` included, is the backend's result and leaves the CPU state untouched).
 ///
-/// The alignment-check exception `#AC` of Type 5 (Table 2-22: 2-, 4- and 8-byte accesses at CPL3) is not
-/// modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0
-/// not carried) is `Unsupported`, as in the SSE3 permutes, instead of guessed.
+/// The alignment-check exception `#AC` of Type 5 (Table 2-22: 2-, 4- and 8-byte accesses at CPL3): an
+/// operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried)
+/// is #AC(0) before the read (ADR-0023 C1, decision 4); a 16-byte operand is not #AC-checked.
 fn step_sse41(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (kind, xmm, operand, immediate): (Sse41Kind, u8, Sse41Operand, u8),
     rex_w: bool,
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     const CR0_EM: u64 = 1 << 2;
@@ -74012,13 +74779,11 @@ fn step_sse41(
         if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
             return report_memory_error(error);
         }
-        if length > 1
-            && address & (length as u64 - 1) != 0
-            && context.privilege == PrivilegeLevel::Ring3
-            && state.rflags & (1 << 18) != 0
-            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+        if let Some(fault) =
+            alignment_check_fault(state, context, address, sse_alignment_requirement(length))
         {
-            return Ok(StepOutcome::Unsupported { opcode });
+            return Ok(StepOutcome::Fault(fault));
         }
     }
     let general = |encoding: u8| {
@@ -74661,9 +75426,9 @@ fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operati
 ///    and raises `#XM` (vector 19) when CR4.OSXMMEXCPT = 1 or `#UD` when it is 0; without CR4 in the state
 ///    the vector is not known and the instruction is `Unsupported` with nothing changed.
 ///
-/// The alignment-check exception `#AC` of the scalar forms (Table 2-20) is not modeled: an unaligned scalar
-/// operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the
-/// S2-34 moves, instead of guessed. RFLAGS is neither read nor written; RIP advances only on success.
+/// The alignment-check exception `#AC` of the scalar forms (Table 2-20): an unaligned scalar operand at CPL3
+/// with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is #AC(0) (ADR-0023 C1, decision 4), as in the
+/// S2-34 moves. RFLAGS is neither read nor written; RIP advances only on success.
 fn step_sse_fp_arith(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -74709,7 +75474,7 @@ fn step_sse_fp_arith(
                 FpForm::Misc(kind, _) => kind.source_access(shape),
                 FpForm::Arith(_) => (shape.memory_bytes(), shape.is_packed()),
             };
-            match read_sse_fp_memory(state, memory, context, operand, access, opcode, next_rip) {
+            match read_sse_fp_memory(state, memory, context, operand, access, next_rip) {
                 Ok(raw) => raw,
                 Err(done) => return done,
             }
@@ -74799,16 +75564,15 @@ fn sse_fp_gate(state: &LongModeState) -> Option<StepOutcome> {
 /// Reads the memory source of a general SSE floating-point form into the low `bytes` of a 16-byte vector. A
 /// non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base), a 16-byte operand that is not 16-byte aligned
 /// (`aligned`: Exceptions Types 2 and 4) is `#GP(0)`, the whole range must be canonical, and then one `read` of
-/// the operand width follows. The alignment-check exception of the Type 3 and Type 5 forms is not modeled: an
-/// operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is
-/// `Unsupported`. `Err` carries the step result to return.
+/// the operand width follows. The alignment-check exception of the Type 3 and Type 5 forms: an operand of 4 or
+/// 8 bytes that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is
+/// #AC(0) (ADR-0023 C1, decision 4). `Err` carries the step result to return.
 fn read_sse_fp_memory(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     operand: MemoryOperand,
     (bytes, aligned): (u64, bool),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<[u8; 16], Result<StepOutcome, MemoryError>> {
     let address = match operand.linear_address_48(state, next_rip) {
@@ -74822,13 +75586,11 @@ fn read_sse_fp_memory(
     if let Err(error) = operand.access_range_address_48(state, next_rip, length) {
         return Err(report_memory_error(error));
     }
-    if !aligned
-        && address & (bytes - 1) != 0
-        && context.privilege == PrivilegeLevel::Ring3
-        && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+    if let Some(fault) =
+        alignment_check_fault(state, context, address, sse_alignment_requirement(length))
     {
-        return Err(Ok(StepOutcome::Unsupported { opcode }));
+        return Err(Ok(StepOutcome::Fault(fault)));
     }
     let mut raw = [0u8; 16];
     if let Err(error) = memory.read(address, context, &mut raw[..length]) {
@@ -74902,7 +75664,6 @@ fn step_sse_mmx_convert(
                 context,
                 operand,
                 kind.source_access(shape),
-                opcode,
                 next_rip,
             ) {
                 Ok(raw) => raw,
@@ -75008,9 +75769,7 @@ fn step_sse_int_convert(
                 Operand::Register(view) => (view.size(), state.read(view)),
                 Operand::Memory(operand) => {
                     let access = (operand.size.bytes() as u64, false);
-                    match read_sse_fp_memory(
-                        state, memory, context, operand, access, opcode, next_rip,
-                    ) {
+                    match read_sse_fp_memory(state, memory, context, operand, access, next_rip) {
                         Ok(bytes) => (
                             operand.size,
                             u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
@@ -75049,9 +75808,7 @@ fn step_sse_int_convert(
                 }
                 Sse3Source::Memory(operand) => {
                     let access = (if double { 8 } else { 4 }, false);
-                    match read_sse_fp_memory(
-                        state, memory, context, operand, access, opcode, next_rip,
-                    ) {
+                    match read_sse_fp_memory(state, memory, context, operand, access, next_rip) {
                         Ok(bytes) => bytes,
                         Err(done) => return done,
                     }
@@ -75244,16 +76001,15 @@ fn crc32c_update(crc: u32, source: u64, bytes: usize) -> u32 {
 /// source; CRC32 leaves every flag alone. The destination is written through `RegisterView`: a dword
 /// destination zero-extends to 64 bits, a word destination (POPCNT r16) keeps bits 63:16.
 ///
-/// The alignment-check exception `#AC` (SDM: CPL3 only) is not modeled: an operand that is not aligned to
-/// its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in
-/// `step_sse41`, instead of guessed. CPL3 is refused before this point in every profile that has a CPL0
+/// The alignment-check exception `#AC` (SDM: CPL3 only): an operand that is not aligned to its size at
+/// CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is #AC(0) (ADR-0023 C1, decision 4), as in
+/// `step_sse41`. CPL3 is refused before this point in every profile that has a CPL0
 /// set.
 fn step_popcnt_crc32(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (crc, dst, src): (bool, RegisterView, Operand),
-    opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
     let size = match src {
@@ -75269,13 +76025,9 @@ fn step_popcnt_crc32(
                 Err(error) => return report_memory_error(error),
             };
             let length = operand.size.bytes() as u64;
-            if length > 1
-                && address & (length - 1) != 0
-                && context.privilege == PrivilegeLevel::Ring3
-                && state.rflags & (1 << 18) != 0
-                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
-            {
-                return Ok(StepOutcome::Unsupported { opcode });
+            // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+            if let Some(fault) = alignment_check_fault(state, context, address, length as u8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             match memory.read_integer(address, context, operand.size) {
                 Ok(value) => value,
@@ -75744,8 +76496,8 @@ fn step_sse_movmsk(
 ///    changed.
 ///
 /// The alignment-check exception `#AC` of the Type 3 and Type 5 forms (Tables 2-20 and 2-22: 4- and 8-byte
-/// accesses at CPL3) is not modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1
-/// (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the integer SSE4.1 forms, instead of guessed.
+/// accesses at CPL3): an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1,
+/// or CR0 not carried) is #AC(0) (ADR-0023 C1, decision 4), as in the integer SSE4.1 forms.
 fn step_sse41_fp(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -75794,13 +76546,11 @@ fn step_sse41_fp(
         if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
             return report_memory_error(error);
         }
-        if length > 1
-            && address & (length as u64 - 1) != 0
-            && context.privilege == PrivilegeLevel::Ring3
-            && state.rflags & (1 << 18) != 0
-            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+        if let Some(fault) =
+            alignment_check_fault(state, context, address, sse_alignment_requirement(length))
         {
-            return Ok(StepOutcome::Unsupported { opcode });
+            return Ok(StepOutcome::Fault(fault));
         }
     }
     let general = |encoding: u8| {
@@ -75988,9 +76738,8 @@ fn fisttp_convert(x87: &X87State, bits: u32) -> (u64, u16) {
 /// underflow), C1 is cleared, the exception bits from [`fisttp_convert`] are ORed into the status word
 /// and the x87 instruction and data pointers are updated like the FIST/FISTP forms; C0, C2 and C3
 /// are undefined by the SDM and stay unchanged; the last-opcode register is not modeled by any form.
-/// `#AC` is not modeled (see [`step_sse3_permute`]): a misaligned destination at CPL3 with
-/// RFLAGS.AC = 1 is `Unsupported`; the SDM defines `#AC(0)` for FISTTP, so this is a conservative
-/// model choice, not a statement of the SDM.
+/// A misaligned destination at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is #AC(0)
+/// before the store, as the SDM defines for FISTTP (ADR-0023 C1, decision 4).
 fn step_fisttp(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -76026,12 +76775,9 @@ fn step_fisttp(
         Ok(address) => address,
         Err(error) => return report_memory_error(error),
     };
-    if address & (size.bytes() as u64 - 1) != 0
-        && context.privilege == PrivilegeLevel::Ring3
-        && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
-    {
-        return Ok(StepOutcome::Unsupported { opcode });
+    // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
+    if let Some(fault) = alignment_check_fault(state, context, address, size.bytes() as u8) {
+        return Ok(StepOutcome::Fault(fault));
     }
     if let Err(error) = memory.write_integer(address, context, size, value) {
         return report_memory_error(error);
@@ -76128,21 +76874,53 @@ fn sse_ref(state: &LongModeState) -> &crate::state::SseState {
         .expect("the CPL0 set loads the SSE state of its FP member before the run")
 }
 
-/// S2-39 (CPL3): the alignment-check exception `#AC` (SDM Vol. 3A 6.15 and Vol. 2A 2.5, Tables 2-20 to 2-22:
-/// CPL3, RFLAGS.AC = 1 and CR0.AM = 1) is not modeled (ADR-0015 item 9 defers it). A memory operand of
-/// `bytes` bytes whose address is not aligned to its size at CPL3 with both bits set is therefore `Unsupported`,
-/// before any memory access, as in the executors of the other S2-39 forms; CR0 not carried counts as AM = 1.
-fn cpl3_ac_unmodeled(
+/// ADR-0023 decision 4, SDM 325462-093US Vol. 3A §7.15 "Interrupt 17—Alignment Check Exception
+/// (#AC)", Table 7-7: the #AC (vector 17, error code 0) of a data or stack operand that starts at
+/// `address` and needs `requirement`-byte alignment (1: never checked). It applies at CPL3 with
+/// RFLAGS.AC = 1 and CR0.AM = 1 (a state without a modeled CR0 counts as AM = 1); implicit accesses to
+/// the descriptor tables are never checked. The executor passes the requirement of its operand (the
+/// adapter cannot choose it: it depends on the instruction, not on the access width) and calls this
+/// after the canonical check of the operand (and after the #GP(0) of an aligned 16-byte form), before
+/// the first memory access of the operand.
+#[inline(always)]
+fn alignment_check_fault(
     state: &LongModeState,
     context: AccessContext,
     address: u64,
-    bytes: usize,
-) -> bool {
-    bytes > 1
-        && address & (bytes as u64 - 1) != 0
-        && context.privilege == PrivilegeLevel::Ring3
+    requirement: u8,
+) -> Option<ArchitecturalFault> {
+    (context.privilege == PrivilegeLevel::Ring3
         && state.rflags & (1 << 18) != 0
-        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        && requirement > 1
+        && address & (u64::from(requirement) - 1) != 0
+        && context.origin != crate::memory::AccessOrigin::DescriptorTable
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0))
+    .then_some(ArchitecturalFault {
+        vector: 17,
+        error_code: Some(0),
+        linear_address: None,
+    })
+}
+
+/// ADR-0023 decision 4: the #AC requirement of an SSE/MMX memory operand of `bytes` bytes: its size
+/// for 2, 4 and 8 bytes, none for 16 (Vol. 2A §2.5, exception Type 4/5: "#AC(0) For 2, 4, or 8 byte
+/// memory access if alignment checking is enabled ..."; a 16-byte aligned form has its #GP(0)).
+const fn sse_alignment_requirement(bytes: usize) -> u8 {
+    if bytes <= 8 { bytes as u8 } else { 1 }
+}
+
+/// [`alignment_check_fault`] as a memory error, for the `?` of the operand helpers.
+#[inline(always)]
+fn alignment_check(
+    state: &LongModeState,
+    context: AccessContext,
+    address: u64,
+    requirement: usize,
+) -> Result<(), MemoryError> {
+    match alignment_check_fault(state, context, address, requirement as u8) {
+        Some(fault) => Err(MemoryError::Architectural(fault)),
+        None => Ok(()),
+    }
 }
 
 fn step_cpl3_xmm(
@@ -76178,19 +76956,7 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            if let Operand::Memory(operand) = source {
-                match operand.access_address_48(state, next_rip) {
-                    Ok(address)
-                        if cpl3_ac_unmodeled(state, context, address, operand.size.bytes()) =>
-                    {
-                        return Ok(StepOutcome::Unsupported {
-                            opcode: instruction.opcode.byte,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(error) => return report_memory_error(error),
-                }
-            }
+            // ADR-0023 C1: the #AC of a misaligned m32/m64 at CPL3 comes from `read_operand`.
             let value = match read_operand(state, memory, context, next_rip, source) {
                 Ok(value) => value,
                 Err(error) => return report_memory_error(error),
@@ -76205,17 +76971,7 @@ fn step_cpl3_xmm(
         } => {
             let source = sse_ref(state).xmm[usize::from(source)];
             let value = u64::from_le_bytes(source[..8].try_into().unwrap());
-            match destination.access_address_48(state, next_rip) {
-                Ok(address)
-                    if cpl3_ac_unmodeled(state, context, address, destination.size.bytes()) =>
-                {
-                    return Ok(StepOutcome::Unsupported {
-                        opcode: instruction.opcode.byte,
-                    });
-                }
-                Ok(_) => {}
-                Err(error) => return report_memory_error(error),
-            }
+            // ADR-0023 C1: the #AC of a misaligned m64 at CPL3 comes from `write_operand`.
             if let Err(error) = write_operand(
                 state,
                 memory,
@@ -76471,10 +77227,8 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            if cpl3_ac_unmodeled(state, context, address, 8) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             let mut low = [0; 8];
             if let Err(error) = memory.read(address, context, &mut low) {
@@ -76490,10 +77244,8 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            if cpl3_ac_unmodeled(state, context, address, 8) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             let mut raw = [0; 8];
             if let Err(error) = memory.read(address, context, &mut raw) {
@@ -76512,10 +77264,8 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            if cpl3_ac_unmodeled(state, context, address, 8) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             let raw = sse_ref(state).xmm[usize::from(source)];
             if let Err(error) = memory.write(address, context, &raw[..8]) {
@@ -76534,10 +77284,8 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            if cpl3_ac_unmodeled(state, context, address, 8) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            if let Some(fault) = alignment_check_fault(state, context, address, 8) {
+                return Ok(StepOutcome::Fault(fault));
             }
             let mut high = [0; 8];
             if let Err(error) = memory.read(address, context, &mut high) {
@@ -76678,10 +77426,8 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            if cpl3_ac_unmodeled(state, context, address, 2) {
-                return Ok(StepOutcome::Unsupported {
-                    opcode: instruction.opcode.byte,
-                });
+            if let Some(fault) = alignment_check_fault(state, context, address, 2) {
+                return Ok(StepOutcome::Fault(fault));
             }
             let mut raw = [0; 2];
             if let Err(error) = memory.read(address, context, &mut raw) {
@@ -76955,13 +77701,8 @@ fn step_cpl0_fp(
             if cr0 & (1 << 3) != 0 {
                 return device_not_available;
             }
-            // S2-39 (CPL3 of the set): a misaligned operand with RFLAGS.AC = 1 and CR0.AM = 1 is a #AC that the
-            // model does not take, so it is refused like every other form of the set (the CPL0 context has none).
-            if let Ok(address) = source.access_range_address_48(state, next_rip, 4)
-                && cpl3_ac_unmodeled(state, context, address, 4)
-            {
-                return unsupported;
-            }
+            // ADR-0023 C1: a misaligned m32 at CPL3 with RFLAGS.AC = 1 and CR0.AM = 1 is the #AC of
+            // `read_operand` (Table 7-7, 4 bytes).
             let value =
                 match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
                     Ok(value) => value as u32,
@@ -77272,8 +78013,8 @@ fn fx_state_form(operation: Operation) -> Option<(MemoryOperand, FxsaveLayout, b
 /// - the area: the first and the last of its 512 bytes canonical (`#SS(0)` for a stack reference,
 ///   `#GP(0)` otherwise, by the operand's segment and base), an area past the end of the address
 ///   space `#GP(0)` (local policy of S2-39c), then a linear address that is not 16-byte aligned
-///   `#GP(0)`; at CPL3 with RFLAGS.AC and CR0.AM set a misaligned area is `Unsupported` (the SDM
-///   allows `#AC` or `#GP` there, `#AC` is not modeled).
+///   `#GP(0)` at every CPL, also with RFLAGS.AC and CR0.AM set at CPL3 (the SDM allows `#AC` or
+///   `#GP` there; ADR-0023 decision 4 takes `#GP(0)`).
 ///
 /// FXSAVE then stores the 13 defined fields in ascending order (`fxsave`; reserved and available
 /// bytes untouched; the plain layout needs both selectors known, which the member's admission
@@ -77329,9 +78070,8 @@ fn step_cpl0_fx_state(
         Err(MemoryError::AddressOverflow { .. }) => return gp0,
         Err(error) => return Err(error),
     };
-    if cpl3_ac_unmodeled(state, context, address, 16) {
-        return unsupported;
-    }
+    // ADR-0023 decision 4: a misaligned FXSAVE/FXRSTOR area is #GP(0) at every CPL (of the two
+    // answers the SDM allows, #AC or #GP, the model takes #GP(0)); no #AC.
     if address & 0xf != 0 {
         return gp0;
     }
@@ -77814,12 +78554,14 @@ fn transfer(
         Operation::MovFsLoad { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
         Operation::MovGsLoad { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
@@ -77828,12 +78570,14 @@ fn transfer(
             // before any register write.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
         Operation::MovGsLoadQ { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
@@ -77843,12 +78587,14 @@ fn transfer(
             // register; flags are untouched.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
         Operation::MovGsLoadD { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
@@ -77858,12 +78604,14 @@ fn transfer(
             // (upper 32 bits zeroed) or qword view; flags are untouched.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
         Operation::MovzxGsLoadW { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
@@ -77873,12 +78621,14 @@ fn transfer(
             // are untouched and nothing is written to memory.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value as u32 as i32 as i64 as u64);
         }
         Operation::MovsxdGsLoad { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value as u32 as i32 as i64 as u64);
         }
@@ -77889,12 +78639,14 @@ fn transfer(
             // untouched and nothing is written to memory.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, sign_extend_byte_load(dst, value));
         }
         Operation::MovsxGsLoadB { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, sign_extend_byte_load(dst, value));
         }
@@ -77905,12 +78657,14 @@ fn transfer(
             // keeps it so. Flags are untouched and nothing is written to memory.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
         Operation::MovzxGsLoadB { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             state.write(dst, value);
         }
@@ -77921,11 +78675,13 @@ fn transfer(
             // registers are untouched.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             memory.write_integer(address, context, dst.size, u64::from(immediate))?;
         }
         Operation::MovGsMemByteImm { dst, immediate } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             memory.write_integer(address, context, dst.size, u64::from(immediate))?;
         }
         Operation::MovFsMemImm { dst, immediate } => {
@@ -77936,11 +78692,13 @@ fn transfer(
             // registers are untouched; the destination is not read.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             memory.write_integer(address, context, dst.size, immediate)?;
         }
         Operation::MovGsMemImm { dst, immediate } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             memory.write_integer(address, context, dst.size, immediate)?;
         }
         Operation::SubFsMem { dst, src } => {
@@ -77949,6 +78707,7 @@ fn transfer(
             // the shared SUB arithmetic of the non-prefixed form.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) = arithmetic_result(
                 OperandSize::Qword,
@@ -77963,6 +78722,7 @@ fn transfer(
         Operation::SubGsMem { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) = arithmetic_result(
                 OperandSize::Qword,
@@ -77980,6 +78740,7 @@ fn transfer(
             // compared with the register through the shared CMP arithmetic.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) = arithmetic_result(
                 dst.size,
@@ -77993,6 +78754,7 @@ fn transfer(
         Operation::CmpGsMem { dst, src } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) = arithmetic_result(
                 dst.size,
@@ -78009,6 +78771,7 @@ fn transfer(
             // read; only the flags change.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
@@ -78017,6 +78780,7 @@ fn transfer(
         Operation::CmpGsMemImm { dst, immediate } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let lhs = memory.read_integer(address, context, dst.size)?;
             let (_, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Cmp, lhs, immediate, state.rflags);
@@ -78032,6 +78796,7 @@ fn transfer(
             // and flags untouched. Nothing is written to a register.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
@@ -78041,6 +78806,7 @@ fn transfer(
         Operation::AddGsMemImm { dst, immediate } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Add, old, immediate, state.rflags);
@@ -78062,6 +78828,7 @@ fn transfer(
             // succeeded, so a faulting read or write leaves memory and flags untouched.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) = logic_result(dst.size, kind, old, immediate, state.rflags);
             memory.write_integer(address, context, dst.size, result)?;
@@ -78074,6 +78841,7 @@ fn transfer(
         } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) = logic_result(dst.size, kind, old, immediate, state.rflags);
             memory.write_integer(address, context, dst.size, result)?;
@@ -78085,6 +78853,7 @@ fn transfer(
             // (always); the flags commit after the write.
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Sub, old, immediate, state.rflags);
@@ -78094,6 +78863,7 @@ fn transfer(
         Operation::SubGsMemImm { dst, immediate } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let old = memory.read_integer(address, context, dst.size)?;
             let (result, flags) =
                 arithmetic_result(dst.size, ArithmeticKind::Sub, old, immediate, state.rflags);
@@ -78114,6 +78884,7 @@ fn transfer(
             let value = state.read(source);
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) =
                 logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
@@ -78127,6 +78898,7 @@ fn transfer(
             let value = state.read(source);
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) =
                 logic_result(destination.size, LogicKind::Or, old, value, state.rflags);
@@ -78147,6 +78919,7 @@ fn transfer(
             let addend = state.read(source);
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) = arithmetic_result(
                 destination.size,
@@ -78165,6 +78938,7 @@ fn transfer(
             let addend = state.read(source);
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) = arithmetic_result(
                 destination.size,
@@ -78185,6 +78959,7 @@ fn transfer(
             // Memory is not written.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) = arithmetic_result(
                 dst.size(),
@@ -78199,6 +78974,7 @@ fn transfer(
         Operation::AddGsLoad { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) = arithmetic_result(
                 dst.size(),
@@ -78220,6 +78996,7 @@ fn transfer(
             // flags are written only after the read succeeded. Memory is not written.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) =
                 logic_result(dst.size(), kind, state.read(dst), rhs, state.rflags);
@@ -78229,6 +79006,7 @@ fn transfer(
         Operation::LogicGsLoad { kind, dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (result, flags) =
                 logic_result(dst.size(), kind, state.read(dst), rhs, state.rflags);
@@ -78243,6 +79021,7 @@ fn transfer(
             // register width. Only the flags change: no register and no memory write.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (_, flags) = arithmetic_result(
                 dst.size(),
@@ -78256,6 +79035,7 @@ fn transfer(
         Operation::CmpGsLoad { dst, src } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let rhs = memory.read_integer(address, context, src.size)?;
             let (_, flags) = arithmetic_result(
                 dst.size(),
@@ -78280,6 +79060,7 @@ fn transfer(
             // untouched and nothing is written to memory.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             if condition.evaluate(state.rflags) {
                 state.write(dst, value);
@@ -78295,6 +79076,7 @@ fn transfer(
         } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             if condition.evaluate(state.rflags) {
                 state.write(dst, value);
@@ -78310,6 +79092,7 @@ fn transfer(
             // byte result, AF kept as in the plain TEST).
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) = logic_result(
                 OperandSize::Byte,
@@ -78323,6 +79106,7 @@ fn transfer(
         Operation::TestGsMemByte { src, immediate } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) = logic_result(
                 OperandSize::Byte,
@@ -78340,6 +79124,7 @@ fn transfer(
             // the result, AF kept). Nothing is written to memory or to a register.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) = logic_result(
                 OperandSize::Word,
@@ -78353,6 +79138,7 @@ fn transfer(
         Operation::TestGsMemWord { src, immediate } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) = logic_result(
                 OperandSize::Word,
@@ -78371,6 +79157,7 @@ fn transfer(
             // kept). Nothing is written to memory or to a register.
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) =
                 logic_result(src.size, LogicKind::Test, value, immediate, state.rflags);
@@ -78379,6 +79166,7 @@ fn transfer(
         Operation::TestGsMemWide { src, immediate } => {
             let address =
                 src.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, src.size.bytes())?;
             let value = memory.read_integer(address, context, src.size)?;
             let (_, flags) =
                 logic_result(src.size, LogicKind::Test, value, immediate, state.rflags);
@@ -78392,6 +79180,7 @@ fn transfer(
             // memory and flags untouched. Nothing is written to a register.
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) = arithmetic_result(destination.size, kind, old, 1, state.rflags);
             memory.write_integer(address, context, destination.size, result)?;
@@ -78400,6 +79189,7 @@ fn transfer(
         Operation::IncDecGsMem { destination, kind } => {
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let old = memory.read_integer(address, context, destination.size)?;
             let (result, flags) = arithmetic_result(destination.size, kind, old, 1, state.rflags);
             memory.write_integer(address, context, destination.size, result)?;
@@ -78419,6 +79209,7 @@ fn transfer(
             // the destination byte (all six arithmetic flags).
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             cmpxchg_at(state, memory, context, address, OperandSize::Byte, source)?;
         }
         Operation::CmpxchgGsMemByte {
@@ -78427,6 +79218,7 @@ fn transfer(
         } => {
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             cmpxchg_at(state, memory, context, address, OperandSize::Byte, source)?;
         }
         Operation::CmpxchgFsMem {
@@ -78444,6 +79236,7 @@ fn transfer(
             // the CMP of the accumulator with the destination (all six arithmetic flags).
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             cmpxchg_at(state, memory, context, address, destination.size, source)?;
         }
         Operation::CmpxchgGsMem {
@@ -78452,6 +79245,7 @@ fn transfer(
         } => {
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             cmpxchg_at(state, memory, context, address, destination.size, source)?;
         }
         Operation::XaddFsMem {
@@ -78463,6 +79257,7 @@ fn transfer(
             // #GP(0); RSP/RBP bases follow the shared FS/GS policy.
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             xadd_at(state, memory, context, address, destination.size, source)?;
         }
         Operation::XaddGsMem {
@@ -78471,6 +79266,7 @@ fn transfer(
         } => {
             let address =
                 destination.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             xadd_at(state, memory, context, address, destination.size, source)?;
         }
         Operation::PushFsMem { source } => {
@@ -78481,12 +79277,14 @@ fn transfer(
             // state and memory untouched. The flags are not touched.
             let address =
                 source.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, source.size.bytes())?;
             let value = memory.read_integer(address, context, OperandSize::Qword)?;
             push_stack_value(state, memory, context, value, OperandSize::Qword)?;
         }
         Operation::PushGsMem { source } => {
             let address =
                 source.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, source.size.bytes())?;
             let value = memory.read_integer(address, context, OperandSize::Qword)?;
             push_stack_value(state, memory, context, value, OperandSize::Qword)?;
         }
@@ -78513,6 +79311,7 @@ fn transfer(
             let expected = state.read(accumulator);
             let replacement = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let observed =
                 memory.atomic_rmw_integer(address, context, size, &mut |old| {
                     if old == expected { replacement } else { old }
@@ -78574,6 +79373,7 @@ fn transfer(
         // memory, registers and flags unchanged. LOCK is optional and has no further effect here.
         Operation::Cmpxchg8b { destination } => {
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let low = |register: Register| state.gpr[register as usize] & 0xffff_ffff;
             let expected = (low(Register::Rdx) << 32) | low(Register::Rax);
             let replacement = (low(Register::Rcx) << 32) | low(Register::Rbx);
@@ -78599,6 +79399,7 @@ fn transfer(
             // from the result, CF kept) commit only after the call succeeded, so a faulting
             // write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 arithmetic_result(destination.size, ArithmeticKind::Inc, old, 1, rflags).0
@@ -78616,6 +79417,7 @@ fn transfer(
             // written back always; the flags commit only after the call succeeded, so a
             // faulting write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 arithmetic_result(destination.size, ArithmeticKind::Dec, old, 1, rflags).0
@@ -78637,6 +79439,7 @@ fn transfer(
             // back even when it equals the old value; the flags commit only after the call
             // succeeded, so a faulting write leaves memory and flags untouched.
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 logic_result(destination.size, LogicKind::Or, old, immediate, rflags).0
@@ -78667,6 +79470,7 @@ fn transfer(
                 ArithmeticKind::Add
             };
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 arithmetic_result(destination.size, kind, old, immediate, rflags).0
@@ -78690,6 +79494,7 @@ fn transfer(
             };
             let operand = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 arithmetic_result(destination.size, kind, old, operand, rflags).0
@@ -78725,6 +79530,7 @@ fn transfer(
             let size = destination.size;
             let addend = state.read(source);
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                 arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags).0
@@ -78745,6 +79551,7 @@ fn transfer(
                 _ => unreachable!(),
             };
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
                 logic_result(destination.size, kind, old, source, rflags).0
@@ -78770,6 +79577,7 @@ fn transfer(
                 .displacement
                 .wrapping_add((offset >> 6).wrapping_mul(8));
             let address = element.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, element.size.bytes())?;
             let mask = 1u64 << (offset & 63);
             let old = memory.atomic_rmw_integer(address, context, element.size, &mut |old| {
                 match kind {
@@ -78801,6 +79609,7 @@ fn transfer(
             // commits only after that write succeeded; OF/SF/AF/PF are undefined and ZF is not
             // affected, so the flags other than CF stay as they are.
             let address = destination.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, destination.size.bytes())?;
             let width = destination.size.bytes() * 8;
             let mask = 1u64 << (u64::from(bit) % width as u64);
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
@@ -78842,6 +79651,7 @@ fn transfer(
                 LockedRmwOp::Arithmetic { kind, source } => {
                     let operand = read_source(state, source);
                     let address = destination.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, destination.size.bytes())?;
                     let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                         arithmetic_result(size, kind, old, operand, rflags).0
                     })?;
@@ -78850,6 +79660,7 @@ fn transfer(
                 LockedRmwOp::Logic { kind, source } => {
                     let operand = read_source(state, source);
                     let address = destination.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, destination.size.bytes())?;
                     let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                         logic_result(size, kind, old, operand, rflags).0
                     })?;
@@ -78860,6 +79671,7 @@ fn transfer(
                     // SDM XADD: TEMP = SRC + DEST; SRC = DEST; DEST = TEMP; flags of the ADD.
                     let addend = state.read(register);
                     let address = destination.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, destination.size.bytes())?;
                     let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                         arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags).0
                     })?;
@@ -78877,6 +79689,7 @@ fn transfer(
                     let expected = state.read(accumulator);
                     let replacement = state.read(register);
                     let address = destination.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, destination.size.bytes())?;
                     let observed = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                         if old == expected { replacement } else { old }
                     })?;
@@ -78892,6 +79705,7 @@ fn transfer(
                     // flag is affected.
                     let value = state.read(register);
                     let address = destination.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, destination.size.bytes())?;
                     let old = memory.atomic_rmw_integer(address, context, size, &mut |_| value)?;
                     state.write(register, old);
                 }
@@ -78922,6 +79736,7 @@ fn transfer(
                         }
                     };
                     let address = element.access_address_48(state, next_rip)?;
+                    alignment_check(state, context, address, element.size.bytes())?;
                     let mask = 1u64 << bit;
                     let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
                         match kind {
@@ -78941,12 +79756,14 @@ fn transfer(
             // the zero base; a non-canonical result is #GP(0)).
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.fs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let value = state.read(src);
             memory.write_integer(address, context, dst.size, value)?;
         }
         Operation::MovGsStore { dst, src } => {
             let address =
                 dst.access_address_48_with_segment_base(state, next_rip, state.gs_base)?;
+            alignment_check(state, context, address, dst.size.bytes())?;
             let value = state.read(src);
             memory.write_integer(address, context, dst.size, value)?;
         }
@@ -78973,6 +79790,7 @@ fn transfer(
                         }
                         _ => mem.access_address_48(state, next_rip)?,
                     };
+                    alignment_check(state, context, address, mem.size.bytes())?;
                     memory.write_integer(address, context, mem.size, selector)?;
                 }
                 Operand::Immediate(_) => unreachable!("MOV r/m, Sreg has no immediate destination"),
@@ -79001,6 +79819,7 @@ fn transfer(
             memory: operand,
         } => {
             let address = operand.access_address_48(state, next_rip)?;
+            alignment_check(state, context, address, operand.size.bytes())?;
             let replacement = state.read(register);
             // S4-38L9p / S6-20: every width (the dword form in the CPL0 set and the bare run, the
             // qword form outside the set) is one `atomic_rmw_integer` call, so one backend gives
@@ -79205,6 +80024,7 @@ fn exec_stack_register(
     }
     let old_rsp = state.gpr[Register::Rsp as usize];
     let stack_address = stack_access_address(old_rsp, false, stack_width)?;
+    alignment_check(state, context, stack_address, stack_width.bytes())?;
     let value = memory.read_integer(stack_address, context, stack_width)?;
     // POP SP first advances the 64-bit stack pointer by two, then writes the popped word into its
     // low 16-bit alias. The qword form likewise writes RSP after the post-increment step.
@@ -79248,7 +80068,9 @@ fn exec_return(
     stack_adjust: u16,
 ) -> Result<StepOutcome, MemoryError> {
     let old_rsp = state.gpr[Register::Rsp as usize];
-    let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+    let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword)
+        .and_then(|address| alignment_check(state, context, address, 8).map(|()| address))
+    {
         Ok(address) => address,
         Err(error) => return report_memory_error(error),
     };
@@ -79480,6 +80302,7 @@ fn read_memory_operand(
     mem: MemoryOperand,
 ) -> Result<u64, MemoryError> {
     let address = mem.access_address_48(state, next_rip)?;
+    alignment_check(state, context, address, mem.size.bytes())?;
     memory.read_integer(address, context, mem.size)
 }
 
@@ -79511,6 +80334,7 @@ fn read_rmw_destination(
         && let Some(operand) = cpl3_ordinary_rmw_destination(instruction)
     {
         let address = operand.access_address_48(state, next_rip)?;
+        alignment_check(state, context, address, operand.size.bytes())?;
         return memory.read_integer_for_write(address, context, operand.size);
     }
     read_operand(state, memory, context, next_rip, destination)
@@ -79544,6 +80368,7 @@ fn write_memory_operand(
     value: u64,
 ) -> Result<(), MemoryError> {
     let address = mem.access_address_48(state, next_rip)?;
+    alignment_check(state, context, address, mem.size.bytes())?;
     memory.write_integer(address, context, mem.size, value)
 }
 
@@ -79558,6 +80383,7 @@ fn update_memory_operand(
     update: impl FnOnce(u64) -> (u64, u64),
 ) -> Result<u64, MemoryError> {
     let address = destination.access_address_48(state, next_rip)?;
+    alignment_check(state, context, address, destination.size.bytes())?;
     let old = memory.read_for_write_integer(address, context, destination.size)?;
     let (value, flags) = update(old);
     memory.write_integer(address, context, destination.size, value)?;

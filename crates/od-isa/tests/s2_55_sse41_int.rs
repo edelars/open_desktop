@@ -2372,8 +2372,7 @@ fn a_16_byte_memory_operand_that_is_not_16_byte_aligned_is_gp0_for_types_1_and_4
 }
 
 #[test]
-fn at_cpl3_with_the_alignment_check_armed_type_4_is_gp0_and_type_5_unaligned_is_refused_not_guessed()
- {
+fn at_cpl3_with_the_alignment_check_armed_type_4_is_gp0_and_type_5_unaligned_is_alignment_check() {
     const AC: u64 = 1 << 18;
     const CR0_BASE: u64 = 0x8001_0033; // PG | WP | NE | ET | MP | PE: AM = 0
     for kind in &KINDS {
@@ -2388,9 +2387,12 @@ fn at_cpl3_with_the_alignment_check_armed_type_4_is_gp0_and_type_5_unaligned_is_
                 } else if kind.bytes == 1 {
                     Ok(StepOutcome::Advanced)
                 } else {
-                    Ok(StepOutcome::Unsupported {
-                        opcode: kind.opcode[2],
-                    })
+                    // ADR-0023 C1 (decision 4): #AC(0) for a Type 5 operand of 2, 4 or 8 bytes.
+                    Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }))
                 },
             ),
             (
@@ -2410,9 +2412,12 @@ fn at_cpl3_with_the_alignment_check_armed_type_4_is_gp0_and_type_5_unaligned_is_
                 } else if kind.bytes <= 2 {
                     Ok(StepOutcome::Advanced)
                 } else {
-                    Ok(StepOutcome::Unsupported {
-                        opcode: kind.opcode[2],
-                    })
+                    // ADR-0023 C1 (decision 4): #AC(0) for a Type 5 operand of 4 or 8 bytes.
+                    Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }))
                 },
             ),
         ] {

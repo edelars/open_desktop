@@ -22818,8 +22818,9 @@ fn invlpg_does_not_consume_the_following_instruction() {
 
 #[test]
 fn invlpg_forms_outside_the_slice_are_refused_with_0x01_without_mutation() {
-    let cases: [&[u8]; 17] = [
-        &[0xf0, 0x0f, 0x01, 0x3f],       // LOCK
+    // ADR-0023 C1: LOCK INVLPG (`F0 0F 01 3F`) left this list: it is #UD at any CPL (Vol. 2A "INVLPG"),
+    // `invlpg_with_lock_is_invalid_opcode_at_cpl0`.
+    let cases: [&[u8]; 16] = [
         &[0xf3, 0x0f, 0x01, 0x3f],       // REP
         &[0xf2, 0x0f, 0x01, 0x3f],       // REPNE
         &[0x66, 0x0f, 0x01, 0x3f],       // 0x66
@@ -22852,6 +22853,27 @@ fn invlpg_forms_outside_the_slice_are_refused_with_0x01_without_mutation() {
         assert_eq!(state, before, "{code:02x?}");
         assert!(memory.reads.is_empty() && memory.writes.is_empty());
     }
+}
+
+/// ADR-0023 C1 (plan C1-2 item 1a): LOCK INVLPG is #UD in the set at CPL0 (the decoder gives
+/// `DecodeError::Invalid`), with nothing changed.
+#[test]
+fn invlpg_with_lock_is_invalid_opcode_at_cpl0() {
+    let mut state = invlpg_state();
+    state.gpr[Register::Rdi as usize] = 0x1000;
+    let before = state.clone();
+    let mut memory = CasMemory::new(&[0xf0, 0x0f, 0x01, 0x3f], 1);
+    let result = run_cas_set(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
 }
 
 #[test]
@@ -29093,19 +29115,17 @@ fn ltr_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x41, 0x66, 0x0f, 0x00, 0xd8], // stale REX
         &[0x41, 0x41, 0x0f, 0x00, 0xd8],
         &[0x66, 0x41, 0x0f, 0x00, 0xd8],
-        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
-        &[0x0f, 0x00, 0xe0], // /4 VERR
-        &[0x0f, 0x00, 0xe8], // /5 VERW AX
+        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests). ADR-0023 C1: VERR and
+        // VERW (/4, /5: `0F 00 E0`, `0F 00 E8`, `41 0F 00 E8`, `0F 00 20`) execute at CPL0 too
+        // (`c1_descriptor_queries.rs`), so they left this list.
         &[0x0f, 0x00, 0xf0], // /6
         &[0x0f, 0x00, 0xf8], // /7
-        &[0x41, 0x0f, 0x00, 0xe8],
         &[0x0f, 0x00, 0x18], // /3 memory forms
         &[0x0f, 0x00, 0x1b],
         &[0x0f, 0x00, 0x5d, 0xf0],
         &[0x0f, 0x00, 0x1d, 0x00, 0x10, 0x00, 0x00],
         &[0x41, 0x0f, 0x00, 0x18],
         &[0x65, 0x0f, 0x00, 0x18],
-        &[0x0f, 0x00, 0x20],
     ];
     for &code in cases {
         let mut state = ltr_state();
@@ -29356,12 +29376,11 @@ fn lldt_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x41, 0x66, 0x0f, 0x00, 0xd6], // stale REX
         &[0x41, 0x41, 0x0f, 0x00, 0xd6],
         &[0x66, 0x41, 0x0f, 0x00, 0xd6],
-        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
-        &[0x0f, 0x00, 0xe6], // /4 VERR
+        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests). ADR-0023 C1: VERR
+        // (/4, `0F 00 E6`, `0F 00 20`) executes too (`c1_descriptor_queries.rs`), so it left this list.
         &[0x0f, 0x00, 0xf6], // /6
         &[0x0f, 0x00, 0xfe], // /7
         &[0x65, 0x0f, 0x00, 0x10],
-        &[0x0f, 0x00, 0x20], // other memory forms
     ];
     for &code in cases {
         // A null selector in every register, so only the form can cause the refusal.
@@ -29670,9 +29689,9 @@ fn mov_drn_forms_outside_the_slice_are_refused_without_mutation() {
         &[0x65, 0x0f, 0x23, 0xfe],
         &[0x2e, 0x0f, 0x23, 0xfe],
         &[0x3e, 0x0f, 0x23, 0xfe],
-        &[0x44, 0x0f, 0x23, 0xfe], // REX.R: DR15
-        &[0x4c, 0x0f, 0x23, 0xc6], // REX.W+R: DR8
-        &[0x45, 0x0f, 0x23, 0xc6],
+        // ADR-0023 C1 (plan C1-2 item 1a): REX.R (DR8-DR15: `44 0F 23 FE`, `4C 0F 23 C6`, `45 0F 23 C6`)
+        // is #UD at any CPL (`c1_cpl3_privilege_layer.rs`,
+        // `reserved_control_and_debug_registers_are_ud_at_cpl0_and_cpl3`), so it left this list.
         &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
         &[0x41, 0x41, 0x0f, 0x23, 0xfe],
         &[0x66, 0x41, 0x0f, 0x23, 0xfe],
@@ -55920,8 +55939,10 @@ fn verw_descriptor_address_fault_leaves_the_state_unchanged() {
 }
 
 #[test]
-fn verw_ldt_selector_and_missing_gdtr_are_refused_with_opcode_0_without_mutation() {
-    // TI = 1: the LDT is not modeled.
+fn verw_ldt_selector_clears_zf_and_a_missing_gdtr_is_refused_with_opcode_0_without_mutation() {
+    // ADR-0023 C1: TI = 1 names the LDT, and LDTR is only ever null in the model (LLDT loads only a
+    // null selector), so the selector is beyond the LDT limit: ZF = 0 (Vol. 2B "VERR/VERW"), no
+    // descriptor read (it was `Unsupported` while the LDT was "not modeled").
     for selector in [0x04u16, 0x14, 0x0c, 0xffff] {
         let mut state = verw_state();
         state.rflags |= FLAG_ZF;
@@ -55929,9 +55950,10 @@ fn verw_ldt_selector_and_missing_gdtr_are_refused_with_opcode_0_without_mutation
         let before = state.clone();
         let mut memory = verw_memory(&[0x0f, 0x00, 0x28], selector);
         let result = run_verw(&mut state, &mut memory).unwrap();
-        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x00 });
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rflags, before.rflags & !FLAG_ZF);
+        assert_eq!(state.rip, before.rip + 3);
         assert!(memory.writes.is_empty());
         assert_eq!(memory.reads, vec![(VERW_SEL_ADDR, 2)]);
     }
@@ -55949,20 +55971,47 @@ fn verw_ldt_selector_and_missing_gdtr_are_refused_with_opcode_0_without_mutation
 
 #[test]
 fn verw_with_prefixes_other_group_members_and_the_bare_form_are_refused_without_mutation() {
+    // ADR-0023 C1: the VERW forms with `66`, a segment, `67` or REX prefix, VERR m16 and the bare VERW AX
+    // execute in the set at CPL0 and CPL3 (`DescriptorQuery`/`VerwGdt` on `descriptor_query`,
+    // `c1_descriptor_queries.rs`); LOCK VERW is #UD; REP/REPNE stay refused.
     for code in [
         &[0x66, 0x0f, 0x00, 0x28][..],
-        &[0xf2, 0x0f, 0x00, 0x28][..],
-        &[0xf3, 0x0f, 0x00, 0x28][..],
-        &[0xf0, 0x0f, 0x00, 0x28][..],
         &[0x2e, 0x0f, 0x00, 0x28][..],
         &[0x64, 0x0f, 0x00, 0x28][..],
         &[0x65, 0x0f, 0x00, 0x28][..],
         &[0x67, 0x0f, 0x00, 0x28][..],
         &[0x48, 0x0f, 0x00, 0x28][..],
+        &[0x0f, 0x00, 0x20][..],
+        &[0x0f, 0x00, 0xe8][..],
+    ] {
+        let mut state = verw_state();
+        state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+        let mut memory = verw_memory(code, 0x10);
+        let result = run_verw(&mut state, &mut memory).unwrap();
+        assert!(
+            !matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}: {result:?}"
+        );
+    }
+    let mut state = verw_state();
+    state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;
+    let before = state.clone();
+    let mut memory = verw_memory(&[0xf0, 0x0f, 0x00, 0x28], 0x10);
+    let result = run_verw(&mut state, &mut memory).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(state, before);
+    // REP/REPNE and a REX that is not directly before the opcode stay refused.
+    for code in [
+        &[0xf2, 0x0f, 0x00, 0x28][..],
+        &[0xf3, 0x0f, 0x00, 0x28][..],
         &[0x40, 0x48, 0x0f, 0x00, 0x28][..],
-        &[0x0f, 0x00, 0x20][..], // VERR m16
-        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
-        &[0x0f, 0x00, 0xe8][..], // bare VERW AX stays CPL3-only (`VerwGdt`)
     ] {
         let mut state = verw_state();
         state.gpr[Register::Rax as usize] = VERW_SEL_ADDR;

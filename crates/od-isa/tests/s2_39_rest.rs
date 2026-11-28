@@ -739,10 +739,10 @@ fn maskmovdqu_faults_for_any_of_its_16_bytes_whatever_the_mask_and_then_writes_n
 }
 
 #[test]
-fn maskmovdqu_alignment_check_is_an_eight_byte_rule_and_is_not_modeled() {
+fn maskmovdqu_alignment_check_is_an_eight_byte_rule() {
     // Physical oracle (Core i5-3210M, CPL3, RFLAGS.AC = 1): offsets 0, 8 and 16 retire, every other offset is SIGBUS/ADRALN,
-    // whatever the mask. #AC is not modeled: Unsupported at CPL3 with AC set and CR0.AM = 1 (the bare run carries no CR0,
-    // which counts as AM = 1; the set admits no CPL3 SSE state, so the flag is only reachable in the bare run).
+    // whatever the mask. ADR-0023 C1 (decision 4) models #AC with this 8-byte requirement (a choice of the model by the
+    // oracle): #AC(0) at CPL3 with AC set and CR0.AM = 1 (the bare run carries no CR0, which counts as AM = 1).
     let code = register_form(&[0x66], 0xf7, 1, 2);
     for offset in 0..17u64 {
         let mut s = setup().reg(7, DATA + offset);
@@ -757,7 +757,15 @@ fn maskmovdqu_alignment_check_is_an_eight_byte_rule_and_is_not_modeled() {
         } else {
             assert_eq!(
                 ring3,
-                refused(&code, &s, Res::Unsupported(0xf7)),
+                refused(
+                    &code,
+                    &s,
+                    Res::Fault(ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None
+                    })
+                ),
                 "misaligned +{offset}"
             );
         }

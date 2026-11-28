@@ -1175,7 +1175,7 @@ fn popcnt_and_crc32_fault_before_any_state_change() {
 }
 
 #[test]
-fn popcnt_and_crc32_alignment_check_at_cpl3_is_refused_not_guessed() {
+fn popcnt_and_crc32_alignment_check_at_cpl3_is_alignment_check() {
     for (code, bytes, opcode) in [
         (vec![0xf3u8, 0x0f, 0xb8, 0x08], 4usize, 0xb8u8),
         (vec![0xf3, 0x48, 0x0f, 0xb8, 0x08], 8, 0xb8),
@@ -1198,9 +1198,15 @@ fn popcnt_and_crc32_alignment_check_at_cpl3_is_refused_not_guessed() {
                 let outcome = step(&mut after, &mut ram, privilege);
                 let misaligned = address % bytes as u64 != 0;
                 if aligned_only && misaligned {
+                    // ADR-0023 C1 (decision 4): #AC(0) by the operand size (it was a refusal).
+                    let _ = opcode;
                     assert_eq!(
                         outcome,
-                        Ok(StepOutcome::Unsupported { opcode }),
+                        Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                            vector: 17,
+                            error_code: Some(0),
+                            linear_address: None
+                        })),
                         "{code:02x?} {address:#x}"
                     );
                     assert_eq!(after, start);

@@ -14167,8 +14167,9 @@ mod tests {
     }
 
     /// S7-32 slice T: on the user-mode board of S4-39c (the Linux set, no Windows MSR member) a
-    /// CPL3 `rdmsr` of an absent MSR is refused by the CPL3 allow-list (`Unsupported`) before any
-    /// #GP, and nothing is journaled. The CPL3 #GP(0) of the Windows set, where only `!cpl3` keeps
+    /// CPL3 `rdmsr` of an absent MSR is not journaled. ADR-0023 C1: RDMSR is `Privileged`, so at CPL3
+    /// it is the #GP(0) of the privilege layer before any MSR lookup (it was the `Unsupported` of the
+    /// allow-list); the board has no IDT here, so the run stops with the fault. The CPL3 #GP(0) of the Windows set, where only `!cpl3` keeps
     /// the access out of the journal, is
     /// `firmware_board::tests::s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_gp0_and_not_journaled`.
     #[test]
@@ -14181,7 +14182,11 @@ mod tests {
         assert_eq!(record.rip, USER_CODE_AT + 5, "{record:?}");
         assert_eq!(
             record.exit,
-            PagedProbeExit::Unsupported { opcode: 0x32 },
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
             "{record:?}"
         );
         let journal = boot.board.bus().msr_gp_journal().expect("installed");
@@ -14766,6 +14771,239 @@ mod tests {
             assert_eq!(read_qword(&mut boot, address), expected, "{address:#x}");
         }
         assert_eq!(boot.board.state().cs_selector, Some(0x08));
+    }
+
+    /// ADR-0023 C1 (plan C1-8): the board for the CPL3 tests of the privilege layer: an interrupt
+    /// gate of `vector` to `USER_HANDLER_AT` (two NOPs, CPL0) with `attributes` (0x8E DPL 0, 0xEE
+    /// DPL 3), RSP0 in the TSS, IDTR and TR loaded.
+    fn c1_board(
+        user_code: &[u8],
+        user_rflags: u64,
+        gates: &[(u8, u8)],
+    ) -> (LinuxDirectBoot, Vec<u8>) {
+        let (mut boot, file) = user_mode_board_with(&[], user_code, true, user_rflags);
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x08,
+            &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(&mut boot, USER_HANDLER_AT, &[0x90, 0x90, 0x90]);
+        for &(vector, attributes) in gates {
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+            gate[5] = attributes;
+            gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+            write_phys(&mut boot, USER_IDT_AT + u64::from(vector) * 16, &gate);
+        }
+        write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+        let state = boot.board.state_mut();
+        // The board GDT has four entries; these tests use slots up to 0x50 (Windows-shaped).
+        state.gdtr.as_mut().expect("the board loads a GDT").limit = 0x57;
+        state.idtr = Some(od_isa::state::Idtr {
+            base: USER_IDT_AT,
+            limit: 0xFFF,
+        });
+        state.tr = Some(od_isa::TaskRegisterCache {
+            selector: 0x20,
+            base: USER_TSS_AT,
+            limit: 0x67,
+            access: 0x8B,
+            flags: 0,
+        });
+        (boot, file)
+    }
+
+    /// The delivery frame on the RSP0 stack: (RIP, CS, SS, error code).
+    fn c1_frame(boot: &mut LinuxDirectBoot, error_code: bool) -> (u64, u64, u64, Option<u64>) {
+        let frame = USER_RSP0 & !15;
+        let base = if error_code { frame - 48 } else { frame - 40 };
+        let code = error_code.then(|| read_qword(boot, base));
+        let rip_at = if error_code { base + 8 } else { base };
+        (
+            read_qword(boot, rip_at),
+            read_qword(boot, rip_at + 8),
+            read_qword(boot, rip_at + 32),
+            code,
+        )
+    }
+
+    /// ADR-0023 C1: the privileged forms at CPL3 are a #GP(0) the board delivers through RSP0: the
+    /// instruction did not retire, the frame holds its RIP and error code 0, the handler runs in CPL0.
+    #[test]
+    fn cpl3_privileged_forms_are_gp0_delivered_through_rsp0() {
+        for code in [
+            &[0x0f, 0x20, 0xc0][..],
+            &[0xf4],
+            &[0xfa],
+            &[0x0f, 0x09],
+            &[0x0f, 0x01, 0x38],
+        ] {
+            let (mut boot, file) = c1_board(code, 0x202, &[(13, 0x8e)]);
+            let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+            assert_eq!(record.exceptions_delivered, 1, "{code:02x?} {record:?}");
+            assert_eq!(
+                (record.retired, record.cpl3_retired, record.cpl),
+                (3, 0, 0),
+                "{code:02x?}"
+            );
+            assert_eq!(record.rip, USER_HANDLER_AT + 2, "{code:02x?}");
+            assert_eq!(
+                c1_frame(&mut boot, true),
+                (USER_CODE_AT, 0x13, 0x1b, Some(0)),
+                "{code:02x?}"
+            );
+        }
+    }
+
+    /// ADR-0023 C1: `IN AL, DX` at CPL3 with IOPL 0: the TSS bit map (I/O map base at 0x66) decides;
+    /// a map beyond the TSS limit is the #GP(0) delivered through RSP0.
+    #[test]
+    fn cpl3_in_with_the_tss_bitmap_denied_is_gp0_delivered() {
+        let (mut boot, file) = c1_board(&[0xec], 0x202, &[(13, 0x8e)]);
+        write_phys(&mut boot, USER_TSS_AT + 0x66, &0x68u16.to_le_bytes());
+        let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+        assert_eq!(record.exceptions_delivered, 1, "{record:?}");
+        assert_eq!(
+            c1_frame(&mut boot, true),
+            (USER_CODE_AT, 0x13, 0x1b, Some(0))
+        );
+    }
+
+    /// ADR-0023 C1: an access the map allows is an honest `Unsupported` stop at CPL3 (the CPL3 entry
+    /// has no port), with nothing retired.
+    #[test]
+    fn cpl3_in_with_the_tss_bitmap_allowed_is_an_unsupported_stop() {
+        let (mut boot, file) = c1_board(&[0xec], 0x202, &[(13, 0x8e)]);
+        write_phys(&mut boot, USER_TSS_AT + 0x66, &0x68u16.to_le_bytes());
+        write_phys(&mut boot, USER_TSS_AT + 0x68, &[0u8; 0x21]);
+        boot.board.state_mut().tr.as_mut().unwrap().limit = 0x68 + 0x20;
+        boot.board.state_mut().gpr[Register::Rdx as usize] = 0x60;
+        let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+        assert_eq!(record.exceptions_delivered, 0, "{record:?}");
+        assert_eq!(record.unsupported_opcode, Some(0xec), "{record:?}");
+        assert_eq!(
+            (record.retired, record.cpl3_retired, record.cpl),
+            (1, 0, 3),
+            "{record:?}"
+        );
+        assert_eq!(record.rip, USER_CODE_AT);
+    }
+
+    /// ADR-0023 C1 (plan question V6): `INT3` at CPL3 goes through its DPL 3 gate without the INT3
+    /// member: a trap frame with the RIP after it, the handler at CPL0.
+    #[test]
+    fn cpl3_int3_is_delivered_through_the_dpl3_gate() {
+        let (mut boot, file) = c1_board(&[0xcc], 0x202, &[(3, 0xee)]);
+        let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+        assert_eq!(
+            (record.retired, record.cpl3_retired, record.cpl),
+            (3, 1, 0),
+            "{record:?}"
+        );
+        assert_eq!(record.rip, USER_HANDLER_AT + 1, "{record:?}");
+        assert_eq!(
+            c1_frame(&mut boot, false),
+            (USER_CODE_AT + 1, 0x13, 0x1b, None)
+        );
+    }
+
+    /// ADR-0023 C1: `IRETQ` from CPL3 to CPL3 through the board adapter: the frame on the user stack,
+    /// CS 0x23 and SS 0x2b with the Accessed bit clear in the GDT in board RAM (a supervisor page),
+    /// which the return sets.
+    #[test]
+    fn cpl3_iretq_to_cpl3_runs_through_the_adapter_and_sets_accessed_bits() {
+        let target = USER_CODE_AT + 0x20;
+        let (mut boot, file) = c1_board(&[0x48, 0xcf], 0x202, &[]);
+        write_phys(&mut boot, target, &[0x90, 0x90]);
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x20,
+            &0x00af_fa00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x28,
+            &0x00cf_f200_0000_ffff_u64.to_le_bytes(),
+        );
+        let user_rsp = ENTRY + 0x800;
+        for (offset, value) in [
+            (0u64, target),
+            (8, 0x23),
+            (16, 0x246),
+            (24, ENTRY + 0x900),
+            (32, 0x2b),
+        ] {
+            write_phys(&mut boot, user_rsp + offset, &value.to_le_bytes());
+        }
+        let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+        assert_eq!(record.exceptions_delivered, 0, "{record:?}");
+        assert_eq!(
+            (record.retired, record.cpl3_retired, record.cpl),
+            (3, 2, 3),
+            "{record:?}"
+        );
+        assert_eq!(record.rip, target + 1, "{record:?}");
+        assert_eq!(
+            read_qword(&mut boot, USER_GDT + 0x20),
+            0x00af_fb00_0000_ffff
+        );
+        assert_eq!(
+            read_qword(&mut boot, USER_GDT + 0x28),
+            0x00cf_f300_0000_ffff
+        );
+        let state = boot.board.state();
+        assert_eq!(
+            (state.cs_selector, state.ss_selector),
+            (Some(0x23), Some(0x2b))
+        );
+        assert_eq!(state.gpr[Register::Rsp as usize], ENTRY + 0x900);
+    }
+
+    /// ADR-0023 C1: `lsl eax, ecx` at CPL3 with ECX = 0x53 (a Windows-shaped GDT 0x50: user data
+    /// whose limit carries the processor number in bits 19:14), then `shr eax, 14` in the test.
+    #[test]
+    fn cpl3_lsl_of_the_processor_selector() {
+        let (mut boot, file) = c1_board(&[0x0f, 0x03, 0xc1], 0x202, &[]);
+        let limit = (5u64 << 14) | 0x3c00;
+        let descriptor = 0x0040_f300_0000_0000 | (limit & 0xffff) | ((limit >> 16) << 48);
+        write_phys(&mut boot, USER_GDT + 0x50, &descriptor.to_le_bytes());
+        boot.board.state_mut().gpr[Register::Rcx as usize] = 0x53;
+        let gdtr = boot.board.state().gdtr.unwrap();
+        assert!(gdtr.limit >= 0x57, "{gdtr:?}");
+        let record = run_syscall_facade(&mut boot, &file, 2, 0xd01);
+        assert_eq!((record.retired, record.cpl3_retired), (2, 1), "{record:?}");
+        assert_eq!(record.gpr[Register::Rax as usize] >> 14, 5);
+        assert_ne!(record.rflags & (1 << 6), 0, "ZF");
+    }
+
+    /// ADR-0023 C1 (decision 4, plan C1-6 item 7): `mov rax, [rdi]` (an allow-listed form) at CPL3
+    /// with CR0.AM = 1, RFLAGS.AC = 1 and RDI misaligned is the #AC (vector 17, error code 0)
+    /// delivered through the IDT to CPL0 with the RIP of the instruction; with AC = 0 it loads.
+    #[test]
+    fn a_cpl3_alignment_check_is_delivered_as_vector_17_with_error_code_0() {
+        for ac in [true, false] {
+            let flags = 0x202 | if ac { 1 << 18 } else { 0 };
+            let (mut boot, file) = c1_board(&[0x48, 0x8b, 0x07], flags, &[(17, 0x8e)]);
+            let cr0 = boot.board.state().cr0.unwrap() | (1 << 18);
+            boot.board.state_mut().cr0 = Some(cr0);
+            let data = ENTRY + 0xa01;
+            write_phys(&mut boot, data, &0x1122_3344_5566_7788u64.to_le_bytes());
+            boot.board.state_mut().gpr[Register::Rdi as usize] = data;
+            let record = run_syscall_facade(&mut boot, &file, 2, 0xd01);
+            if ac {
+                assert_eq!(record.exceptions_delivered, 1, "{record:?}");
+                assert_eq!(record.rip, USER_HANDLER_AT + 1, "{record:?}");
+                assert_eq!(
+                    c1_frame(&mut boot, true),
+                    (USER_CODE_AT, 0x13, 0x1b, Some(0))
+                );
+            } else {
+                assert_eq!(record.exceptions_delivered, 0, "{record:?}");
+                assert_eq!(record.cpl3_retired, 1, "{record:?}");
+                assert_eq!(record.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+            }
+        }
     }
 
     /// S2-27m: the bare `SYSRETL` (`0F 07`) retires in CPL0 and commits the compatibility-mode

@@ -1082,6 +1082,19 @@ pub enum FxsaveLayout {
     Long64,
 }
 
+/// ADR-0023 C1: the descriptor queries of [`Operation::DescriptorQuery`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescriptorQueryKind {
+    /// `LAR` (`0F 02 /r`): the access rights of the descriptor.
+    Lar,
+    /// `LSL` (`0F 03 /r`): the segment limit (scaled by G).
+    Lsl,
+    /// `VERR` (`0F 00 /4`): readable from the CPL.
+    Verr,
+    /// `VERW` (`0F 00 /5`): writable from the CPL.
+    Verw,
+}
+
 /// S7-32: the carry-flag instructions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CarryFlagOp {
@@ -1674,6 +1687,17 @@ pub enum Operation {
     StoreSystemSelector {
         tr: bool,
         dst: Operand,
+    },
+    /// C1 (ADR-0023): LAR (`0F 02 /r`), LSL (`0F 03 /r`), VERR (`0F 00 /4`) and the VERW forms
+    /// (`0F 00 /5`) that `VerwGdt`/`VerwMem` do not claim (any register, a memory operand with a
+    /// segment override such as FS/GS — ISSUE-718, `66`, REX.W). `dst` is the destination register of
+    /// LAR/LSL at the operand size (16/32/64: `66`/none/REX.W), `None` for VERR/VERW; `source` is the
+    /// selector, r/m16 (a register: its low 16 bits; memory: 16 bits at any addressing, FS/GS
+    /// included). Only ZF changes. Executed only in the CPL0 profile set (CPL0 and CPL3).
+    DescriptorQuery {
+        kind: DescriptorQueryKind,
+        dst: Option<RegisterView>,
+        source: Operand,
     },
     /// S7-32: `LLDT m16` (`0F 00 /2`, memory operand). Executed only in the CPL0 profile set and
     /// only for a null selector (0..=3), like the register form [`Operation::LoadLdt`].
@@ -4111,7 +4135,7 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::VerwGdt | Operation::VerwMem { .. } => FlagEffects {
+            Operation::VerwGdt | Operation::VerwMem { .. } | Operation::DescriptorQuery { .. } => FlagEffects {
                 defined: crate::ZF,
                 undefined: 0,
             },
@@ -4330,6 +4354,25 @@ impl<M: GuestMemory> Fetch<'_, M> {
             size,
             segment: null_override_class(prefixes),
         }))
+    }
+
+    /// ADR-0023 C1: the selector source of a descriptor query: r/m16 (a register at word size; a
+    /// memory operand with the segment of its override: FS/GS add their base, a null override keeps
+    /// its fault class).
+    fn descriptor_query_source(
+        &mut self,
+        modrm: u8,
+        prefixes: Prefixes,
+    ) -> Result<Operand, DecodeError> {
+        let mut source = self.rm_operand(modrm, prefixes, OperandSize::Word)?;
+        if let Operand::Memory(memory) = &mut source {
+            match prefixes.segment {
+                Some(0x64) => memory.segment = MemorySegment::Fs,
+                Some(0x65) => memory.segment = MemorySegment::Gs,
+                _ => {}
+            }
+        }
+        Ok(source)
     }
 
     #[inline(always)]
@@ -4892,6 +4935,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             length: self.length,
                         });
                     }
+                    // ADR-0023 slice C1: LOCK INVLPG m (`/7`) is #UD at any CPL (SDM 325462-093US
+                    // Vol. 2A "INVLPG": "#UD If the LOCK prefix is used"), before the #GP(0) of CPL.
+                    _ if (modrm >> 3) & 7 == 7 && modrm >> 6 != 3 => {
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
+                        return Err(DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
                     _ => return Err(self.unsupported(opcode)),
                 }
                 return Err(DecodeError::Invalid {
@@ -4995,7 +5047,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x9e | 0x9f | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe0..=0xe3 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x0d | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+                | (OpcodeMap::Escape0f, 0x00 | 0x02 | 0x03 | 0x0d | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -5023,7 +5075,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_ud_candidate = prefixes.group1 == Some(0xf0)
             && matches!(
                 (opcode.map, opcode.byte),
-                (OpcodeMap::Primary, 0x9e | 0x9f) | (OpcodeMap::Escape0f, 0x0d)
+                (OpcodeMap::Primary, 0x9e | 0x9f)
+                    // ADR-0023 C1: LOCK VERR/VERW/LAR/LSL is #UD (the arms decode the whole form first).
+                    | (OpcodeMap::Escape0f, 0x0d | 0x00 | 0x02 | 0x03)
             );
         // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
         // it only in the CPL0 set.
@@ -10133,10 +10187,52 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && !prefixes.address_override
                     && !stale_rex
                     && prefixes.rex.is_none_or(|rex| rex & 8 == 0);
-                if prefixes != Prefixes::default() && !ltr_prefixes {
+                // ADR-0023 C1: VERR/VERW (`/4`, `/5`) in the forms below the narrow ones take any
+                // operand-size, address-size, segment or REX prefix; LOCK is #UD; REP/REPNE and a
+                // REX that is not directly before the opcode stay unsupported.
+                let query_prefixes = matches!(prefixes.group1, None | Some(0xf0)) && !stale_rex;
+                if prefixes != Prefixes::default() && !ltr_prefixes && !query_prefixes {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
+                let reg = (modrm >> 3) & 7;
+                if prefixes.group1.is_none()
+                    && !(prefixes == Prefixes::default() && modrm == 0xe8)
+                    && !(ltr_prefixes && modrm >> 6 != 3 && reg == 5)
+                    && matches!(reg, 4 | 5)
+                {
+                    let kind = if reg == 4 {
+                        DescriptorQueryKind::Verr
+                    } else {
+                        DescriptorQueryKind::Verw
+                    };
+                    let source = self.descriptor_query_source(modrm, prefixes)?;
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Word,
+                        address_size: if prefixes.address_override {
+                            OperandSize::Dword
+                        } else {
+                            OperandSize::Qword
+                        },
+                        operation: Operation::DescriptorQuery {
+                            kind,
+                            dst: None,
+                            source,
+                        },
+                    });
+                }
+                if prefixes.group1 == Some(0xf0) && matches!(reg, 4 | 5) {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                if prefixes != Prefixes::default() && !ltr_prefixes {
+                    return Err(self.unsupported(opcode));
+                }
                 if prefixes == Prefixes::default() && modrm == 0xe8 {
                     Operation::VerwGdt
                 } else if ltr_prefixes && modrm >> 6 != 3 && (modrm >> 3) & 7 == 5 {
@@ -10166,6 +10262,61 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
             }
+            // ADR-0023 C1: LAR (`0F 02 /r`) and LSL (`0F 03 /r`): the destination at the operand
+            // size (`66`: 16, none: 32, REX.W: 64; REX.R extends it), the source r/m16 at any
+            // addressing and segment. LOCK is #UD (SDM Vol. 2A "LAR", Vol. 2B "LSL"); REP/REPNE and
+            // a REX that is not directly before the opcode stay unsupported.
+            (OpcodeMap::Escape0f, 0x02 | 0x03) => {
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if stale_rex || matches!(prefixes.group1, Some(0xf2 | 0xf3)) {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if prefixes.group1 == Some(0xf0) {
+                    self.rm_operand(modrm, prefixes, OperandSize::Word)?;
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                let rex = prefixes.rex.unwrap_or(0);
+                let size = if rex & 8 != 0 {
+                    OperandSize::Qword
+                } else if prefixes.operand_override {
+                    OperandSize::Word
+                } else {
+                    OperandSize::Dword
+                };
+                let dst = view(
+                    ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    size,
+                    prefixes.rex.is_some(),
+                );
+                let source = self.descriptor_query_source(modrm, prefixes)?;
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: size,
+                    address_size: if prefixes.address_override {
+                        OperandSize::Dword
+                    } else {
+                        OperandSize::Qword
+                    },
+                    operation: Operation::DescriptorQuery {
+                        kind: if opcode.byte == 0x02 {
+                            DescriptorQueryKind::Lar
+                        } else {
+                            DescriptorQueryKind::Lsl
+                        },
+                        dst: Some(dst),
+                        source,
+                    },
+                });
+            }
             (OpcodeMap::Escape0f, 0x23) => {
                 // S4-38L7ax: `MOV DRn, r64` (`0F 23 /r`, mod = 11) takes no prefix or a lone REX
                 // directly before the opcode. REX.R would select DR8..DR15 and is refused; REX.W
@@ -10180,8 +10331,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.segment.is_none()
                     && !prefixes.operand_override
                     && !prefixes.address_override
-                    && !stale_rex
-                    && prefixes.rex.is_none_or(|rex| rex & 4 == 0);
+                    && !stale_rex;
                 if !drn_prefixes {
                     return Err(self.unsupported(opcode));
                 }
@@ -10190,6 +10340,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let rex = prefixes.rex.unwrap_or(0);
+                // ADR-0023 slice C1: REX.R selects DR8..DR15, which do not exist: #UD at any CPL
+                // (SDM 325462-093US Vol. 2B "MOV—Move to/from Debug Registers": "#UD If an attempt
+                // is made to write ... DR8-DR15"), like `MOV r64, DRn` with REX.R.
+                if rex & 4 != 0 {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
                 Operation::WriteDebugRegister {
                     index: (modrm >> 3) & 7,
                     source: Register::from_encoding((modrm & 7) | ((rex & 1) << 3))
@@ -34592,13 +34751,11 @@ mod tests {
         assert!(matches!(decoded.operation, Operation::VerwGdt));
         assert_eq!(memory.fetched, vec![0xfff, 0x1000, 0x1001]);
 
+        // ADR-0023 C1: VERR AX, VERR m16 and VERW AX with `66` or REX.W decode as `DescriptorQuery`
+        // (`c1_descriptor_query_forms_decode_with_their_lengths_and_operands`).
         for bytes in [
-            &[0x0f, 0x00, 0xe0][..], // VERR AX
             &[0x0f, 0x00, 0xf0][..], // another group extension
             &[0xf3, 0x0f, 0x00, 0xe8][..],
-            &[0x66, 0x0f, 0x00, 0xe8][..],
-            &[0x48, 0x0f, 0x00, 0xe8][..],
-            &[0x0f, 0x00, 0x60][..], // VERR m16 (memory operand)
         ] {
             let mut memory = Memory::new(bytes);
             assert!(matches!(
@@ -34672,16 +34829,16 @@ mod tests {
         let bare = Memory::new(&[0x0f, 0x00, 0xe8]).decode().unwrap();
         assert!(matches!(bare.operation, Operation::VerwGdt));
 
+        // ADR-0023 C1: the VERW m16 forms with `66`, a segment, `67` or REX.W, VERR m16 and the
+        // register forms decode as `DescriptorQuery`; LOCK is `Invalid`
+        // (`c1_descriptor_query_forms_decode_with_their_lengths_and_operands`).
+        assert!(matches!(
+            Memory::new(&[0xf0, 0x0f, 0x00, 0x2d, 0, 0, 0, 0]).decode(),
+            Err(DecodeError::Invalid { .. })
+        ));
         for bytes in [
-            &[0x66, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
             &[0xf2, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
             &[0xf3, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0xf0, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0x2e, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0x64, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0x65, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0x67, 0x0f, 0x00, 0x2d, 0, 0, 0, 0][..],
-            &[0x48, 0x0f, 0x00, 0x28][..],
             &[0x40, 0x48, 0x0f, 0x00, 0x28][..],
             &[0x40, 0x66, 0x0f, 0x00, 0x28][..],
             // the other memory members of the group stay unsupported
@@ -34689,12 +34846,8 @@ mod tests {
             &[0x0f, 0x00, 0x08][..], // STR m16
             &[0x0f, 0x00, 0x10][..], // LLDT m16
             &[0x0f, 0x00, 0x18][..], // LTR m16
-            &[0x0f, 0x00, 0x20][..], // VERR m16
             &[0x0f, 0x00, 0x30][..], // reg = 6
             &[0x0f, 0x00, 0x38][..], // reg = 7
-            // register forms other than the bare VERW AX
-            &[0x0f, 0x00, 0xe9][..],
-            &[0x0f, 0x00, 0xe0][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(
@@ -36982,10 +37135,10 @@ mod tests {
             &[0x41, 0x66, 0x0f, 0x00, 0xd8], // stale REX
             &[0x0f, 0x00, 0xc0],             // SLDT
             &[0x0f, 0x00, 0xc8],             // STR
-            &[0x0f, 0x00, 0xe0],             // VERR
-            &[0x0f, 0x00, 0x18],             // LTR m16
+            // ADR-0023 C1: VERR (`0F 00 E0`) and VERW with REX (`41 0F 00 E8`) decode as
+            // `DescriptorQuery` (`c1_descriptor_query_forms_decode_with_their_lengths_and_operands`).
+            &[0x0f, 0x00, 0x18], // LTR m16
             &[0x41, 0x0f, 0x00, 0x18],
-            &[0x41, 0x0f, 0x00, 0xe8], // VERW with REX
         ] {
             assert!(
                 matches!(
@@ -37100,8 +37253,8 @@ mod tests {
             &[0x67, 0x0f, 0x23, 0xfe],
             &[0x65, 0x0f, 0x23, 0xfe],
             &[0x2e, 0x0f, 0x23, 0xfe],
-            &[0x44, 0x0f, 0x23, 0xfe],       // REX.R: DR8..DR15
-            &[0x4c, 0x0f, 0x23, 0xc6],       // REX.W+R
+            // ADR-0023 C1: REX.R (DR8..DR15: `44 0F 23 FE`, `4C 0F 23 C6`) is `Invalid`
+            // (`c1_reserved_control_and_debug_registers_and_lock_forms_are_invalid`).
             &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
             &[0x0f, 0x23, 0x3e],             // mod != 11 (not modeled)
             &[0x0f, 0x23, 0x7e, 0x08],
@@ -37209,9 +37362,13 @@ mod tests {
             .decode()
             .unwrap();
         assert_eq!((decoded.length, decoded.operation), (3, Operation::Invlpg));
+        // ADR-0023 C1: LOCK INVLPG is `Invalid` (#UD at any CPL), not a refusal.
+        assert!(matches!(
+            Memory::new(&[0xf0, 0x0f, 0x01, 0x3f]).decode(),
+            Err(DecodeError::Invalid { .. })
+        ));
         for bytes in [
-            &[0xf0u8, 0x0f, 0x01, 0x3f][..], // LOCK
-            &[0xf3, 0x0f, 0x01, 0x3f],       // REP
+            &[0xf3u8, 0x0f, 0x01, 0x3f][..], // REP
             &[0xf2, 0x0f, 0x01, 0x3f],       // REPNE
             &[0x66, 0x0f, 0x01, 0x3f],
             &[0x67, 0x0f, 0x01, 0x3f],
@@ -40081,6 +40238,201 @@ mod tests {
         assert!(!matches!(
             general(&[0x66, 0xf2, 0x0f, 0x10, 0x43, 0x40]).map(|d| d.operation),
             Ok(Operation::MovsdLoadMemory { .. })
+        ));
+    }
+
+    /// ADR-0023 C1 (plan C1-2 item 1a): a reserved control register (CR1, CR5-CR7, CR9-CR15) or a
+    /// debug register with REX.R (DR8-DR15) is `Invalid` (#UD) at any CPL; LOCK INVLPG and LOCK MOV
+    /// CR0 are `Invalid`; CR8 stays the `ReadControl`/`WriteControl` of the TPR member.
+    #[test]
+    fn c1_reserved_control_and_debug_registers_and_lock_forms_are_invalid() {
+        for bytes in [
+            &[0x0f, 0x20, 0xc8][..],
+            &[0x44, 0x0f, 0x20, 0xc8],
+            &[0x0f, 0x22, 0xe8],
+            &[0x4c, 0x0f, 0x22, 0xf8],
+            &[0x44, 0x0f, 0x21, 0xc0],
+            &[0x44, 0x0f, 0x23, 0xc0],
+            &[0xf0, 0x0f, 0x01, 0x38],
+            &[0xf0, 0x0f, 0x20, 0xc0],
+            &[0xf0, 0x0f, 0x03, 0xc1],
+            &[0xf0, 0x0f, 0x00, 0xe1],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode_general(),
+                    Err(DecodeError::Invalid { .. })
+                ),
+                "{bytes:02x?}: {:?}",
+                Memory::new(bytes).decode_general()
+            );
+        }
+        assert!(matches!(
+            Memory::new(&[0x44, 0x0f, 0x20, 0xc0])
+                .decode_general()
+                .unwrap()
+                .operation,
+            Operation::ReadControl {
+                cr: 8,
+                dst: Register::Rax
+            }
+        ));
+        assert!(matches!(
+            Memory::new(&[0x44, 0x0f, 0x22, 0xc0])
+                .decode_general()
+                .unwrap()
+                .operation,
+            Operation::WriteControl {
+                cr: 8,
+                src: Register::Rax
+            }
+        ));
+    }
+
+    /// ADR-0023 C1 (plan C1-5c item 6): the lengths and operands of LAR, LSL, VERR and VERW.
+    #[test]
+    fn c1_descriptor_query_forms_decode_with_their_lengths_and_operands() {
+        use DescriptorQueryKind::{Lar, Lsl, Verr, Verw};
+        let word = |register| Operand::Register(RegisterView::low(register, OperandSize::Word));
+        let memory = |base, index, scale, displacement, segment| {
+            Operand::Memory(MemoryOperand {
+                base,
+                index,
+                scale,
+                displacement,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Word,
+                segment,
+            })
+        };
+        let dst = |register, size| Some(RegisterView::low(register, size));
+        let cases: Vec<(
+            &[u8],
+            u8,
+            DescriptorQueryKind,
+            Option<RegisterView>,
+            Operand,
+        )> = vec![
+            (
+                &[0x0f, 0x02, 0xc1],
+                3,
+                Lar,
+                dst(Register::Rax, OperandSize::Dword),
+                word(Register::Rcx),
+            ),
+            (
+                &[0x66, 0x0f, 0x02, 0xc1],
+                4,
+                Lar,
+                dst(Register::Rax, OperandSize::Word),
+                word(Register::Rcx),
+            ),
+            (
+                &[0x48, 0x0f, 0x03, 0xc1],
+                4,
+                Lsl,
+                dst(Register::Rax, OperandSize::Qword),
+                word(Register::Rcx),
+            ),
+            (
+                &[0x4d, 0x0f, 0x03, 0xc8],
+                4,
+                Lsl,
+                dst(Register::R9, OperandSize::Qword),
+                word(Register::R8),
+            ),
+            (
+                &[0x0f, 0x03, 0xc0],
+                3,
+                Lsl,
+                dst(Register::Rax, OperandSize::Dword),
+                word(Register::Rax),
+            ),
+            (
+                &[0x0f, 0x02, 0x44, 0x77, 0x10],
+                5,
+                Lar,
+                dst(Register::Rax, OperandSize::Dword),
+                memory(
+                    AddressBase::Register(Register::Rdi),
+                    Some(Register::Rsi),
+                    2,
+                    0x10,
+                    MemorySegment::Flat,
+                ),
+            ),
+            (
+                &[0x0f, 0x03, 0x05, 0x40, 0, 0, 0],
+                7,
+                Lsl,
+                dst(Register::Rax, OperandSize::Dword),
+                memory(AddressBase::NextRip, None, 1, 0x40, MemorySegment::Flat),
+            ),
+            (&[0x0f, 0x00, 0xe1], 3, Verr, None, word(Register::Rcx)),
+            (&[0x41, 0x0f, 0x00, 0xe8], 4, Verw, None, word(Register::R8)),
+            (
+                &[0x0f, 0x00, 0x27],
+                3,
+                Verr,
+                None,
+                memory(
+                    AddressBase::Register(Register::Rdi),
+                    None,
+                    1,
+                    0,
+                    MemorySegment::Flat,
+                ),
+            ),
+            (
+                &[0x65, 0x0f, 0x00, 0x2c, 0x25, 0x2a, 0xb0, 0x00, 0x00],
+                9,
+                Verw,
+                None,
+                memory(AddressBase::None, None, 1, 0xb02a, MemorySegment::Gs),
+            ),
+            (
+                &[0x64, 0x0f, 0x02, 0x07],
+                4,
+                Lar,
+                dst(Register::Rax, OperandSize::Dword),
+                memory(
+                    AddressBase::Register(Register::Rdi),
+                    None,
+                    1,
+                    0,
+                    MemorySegment::Fs,
+                ),
+            ),
+        ];
+        for (bytes, length, kind, expected_dst, expected_source) in cases {
+            let instruction = Memory::new(bytes)
+                .decode_general()
+                .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+            assert_eq!(instruction.length, length, "{bytes:02x?}");
+            assert_eq!(
+                instruction.operation,
+                Operation::DescriptorQuery {
+                    kind,
+                    dst: expected_dst,
+                    source: expected_source,
+                },
+                "{bytes:02x?}"
+            );
+        }
+        // The narrow VERW forms keep their variants.
+        assert_eq!(
+            Memory::new(&[0x0f, 0x00, 0xe8])
+                .decode_general()
+                .unwrap()
+                .operation,
+            Operation::VerwGdt
+        );
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x00, 0x2f])
+                .decode_general()
+                .unwrap()
+                .operation,
+            Operation::VerwMem { .. }
         ));
     }
 }

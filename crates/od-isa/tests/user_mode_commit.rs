@@ -450,14 +450,18 @@ fn after_the_commit_the_cpl3_entry_runs_an_allowed_form_then_stops_on_a_forbidde
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
 
-    // `IRETQ` is not on the allow-list, committed set or not.
+    // ADR-0023 C1: `IRETQ` at CPL3 is now the return to the same level (it reads its frame), so the
+    // form that is never executed at CPL3, committed set or not, is `LRETQ` (`48 CB`, `NotAtCpl3`).
     let mut state = kernel_state();
     let mut memory = user_frame();
-    memory.user = IRETQ.to_vec();
+    memory.user = vec![0x48, 0xcb];
     run0(&mut state, &mut memory, &set, 5);
     let before = state.clone();
     let result = run3(&mut state, &mut memory, &set, 5);
-    assert_eq!(result.exit, unsupported_cf());
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0xcb })
+    );
     assert_eq!(result.instructions_executed, 0);
     assert_eq!(state, before);
 }

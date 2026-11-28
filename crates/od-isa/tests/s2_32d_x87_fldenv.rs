@@ -7,7 +7,7 @@
 //! (the 32-bit protected-mode image). Admission is the one of FRSTOR (S2-32c): a loaded control word from the twelve
 //! all-exception-masked ones and neither ES nor B in the loaded status word (the SDM would deliver #MF at the next
 //! waiting instruction for an unmasked exception, which this profile does not model), and the same condition on the
-//! current state. CR0.EM/TS (#NM) and CPL3 #AC are not modeled, like in the neighbouring bounded x87 forms.
+//! current state. CR0.EM/TS (#NM) is not modeled; CPL3 #AC was not modeled until ADR-0023 C1 (the area is checked on 4 bytes since).
 //!
 //! Policy for FCS and FDS is that of S2-32c: a loaded selector is `Some(v)`, except that a zero selector stays unrepresented
 //! when it was. The tag word of the image gives empty or non-empty per register; a non-empty one is tagged from the register

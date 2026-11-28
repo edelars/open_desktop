@@ -1450,7 +1450,7 @@ fn memory_faults_and_bad_addresses_leave_the_state_untouched() {
 }
 
 #[test]
-fn at_cpl3_with_the_alignment_check_armed_aligned_operands_run_and_unaligned_type_3_and_5_are_refused()
+fn at_cpl3_with_the_alignment_check_armed_aligned_operands_run_and_unaligned_type_3_and_5_are_alignment_check()
  {
     for (kind, name, _, _, bytes, aligned) in KINDS {
         let code = mem_code(kind, 1, 3);
@@ -1465,9 +1465,15 @@ fn at_cpl3_with_the_alignment_check_armed_aligned_operands_run_and_unaligned_typ
         if !aligned {
             let (outcome, before, after, ram) =
                 exec(&code, PrivilegeLevel::Ring3, armed(DATA + 0x41));
-            assert!(
-                matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
-                "{name} unaligned {bytes}: {outcome:?}"
+            // ADR-0023 C1 (decision 4): #AC(0) for the scalar (Type 3/5) operands.
+            assert_eq!(
+                outcome,
+                Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                    vector: 17,
+                    error_code: Some(0),
+                    linear_address: None
+                })),
+                "{name} unaligned {bytes}"
             );
             assert_eq!(after, before);
             assert!(ram.reads.is_empty() && ram.writes.is_empty());

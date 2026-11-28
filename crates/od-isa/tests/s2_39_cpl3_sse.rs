@@ -943,8 +943,8 @@ fn eight_byte_form(prefix: Option<u8>, map: u8, opcode: u8, rex_w: bool) -> bool
 
 /// Whether the memory operand of the form at `offset` from a 16-byte boundary is misaligned for the size of the
 /// operand (the check of the `#AC` transfer): never for a byte form, at an odd address for a word form, at a
-/// non-multiple of eight for an eight-byte form, at a non-multiple of sixteen for the unaligned 16-byte moves, and
-/// at a non-multiple of four for the other forms (at most four bytes).
+/// non-multiple of eight for an eight-byte form, never for the unaligned 16-byte moves (ADR-0023 C1: no #AC for
+/// 16 bytes), and at a non-multiple of four for the other forms (at most four bytes).
 fn misaligned_for_its_size(
     prefix: Option<u8>,
     map: u8,
@@ -959,7 +959,9 @@ fn misaligned_for_its_size(
     } else if eight_byte_form(prefix, map, opcode, rex_w) {
         offset % 8 != 0
     } else if sixteen_byte_form(prefix, map, opcode) {
-        offset % 16 != 0
+        // ADR-0023 C1 (decision 4): no #AC for a 16-byte access (Vol. 2A §2.5, exception Type 4).
+        let _ = offset;
+        false
     } else {
         offset % 4 != 0
     }
@@ -979,6 +981,8 @@ fn sixteen_byte_form(prefix: Option<u8>, map: u8, opcode: u8) -> bool {
 
 #[test]
 fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_the_mmx_forms() {
+    // ADR-0023 C1 (decision 4): the "AC transfer" is now the architectural #AC(0) of a misaligned 2-, 4- or 8-byte
+    // operand at CPL3 with nothing changed (it was a refusal); `refused_ac` counts these faults.
     let mut totals = SweepTotals::default();
     let mut failures = Vec::new();
     for sweep in sweep_cases() {
@@ -1014,6 +1018,32 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
             continue;
         }
         match (&cpl3.result, &cpl0.result) {
+            (Result_::Fault(fault), cpl0_result)
+                if fault.vector == 17 && !matches!(cpl0_result, Result_::Unsupported(_)) =>
+            {
+                let untouched = cpl3.executed == 0
+                    && cpl3.rip == CODE
+                    && after == before
+                    && cpl3.rflags == case.rflags
+                    && cpl3.data
+                        == initial_memory(&sweep.code, &case).bytes
+                            [DATA as usize..DATA as usize + 0x500];
+                if untouched
+                    && sweep.ac
+                    && sweep.memory
+                    && misaligned_for_its_size(
+                        sweep.prefix,
+                        sweep.map,
+                        sweep.opcode,
+                        sweep.rex_w,
+                        sweep.rax - DATA,
+                    )
+                {
+                    totals.refused_ac += 1;
+                } else {
+                    failures.push(format!("{}: an #AC out of place: {fault:?}", sweep.name));
+                }
+            }
             (Result_::Unsupported(opcode), cpl0_result)
                 if !matches!(cpl0_result, Result_::Unsupported(_)) =>
             {
@@ -1385,7 +1415,10 @@ fn a_supervisor_page_is_a_page_fault_with_the_user_bit_at_cpl3_and_readable_at_c
 }
 
 #[test]
-fn a_misaligned_operand_with_ac_at_cpl3_is_a_refusal_and_the_other_cases_run_like_cpl0() {
+fn a_misaligned_operand_with_ac_at_cpl3_is_alignment_check_and_the_other_cases_run_like_cpl0() {
+    // ADR-0023 C1 (decision 4): a misaligned 2-, 4- or 8-byte operand with RFLAGS.AC = 1 and CR0.AM = 1 at CPL3 is
+    // #AC(0) with nothing changed (it was `Unsupported` while #AC was not modeled); the 16-byte unaligned forms have
+    // no #AC (Vol. 2A §2.5, exception Type 4) and run as at CPL0.
     // (name, code, size of the memory operand in bytes: the alignment #AC is checked against)
     let forms: &[(&str, &[u8], u64)] = &[
         ("MOVUPS load", &[0x0f, 0x10, 0x08], 16),
@@ -1420,7 +1453,8 @@ fn a_misaligned_operand_with_ac_at_cpl3_is_a_refusal_and_the_other_cases_run_lik
         ("STMXCSR", &[0x0f, 0xae, 0x18], 4),
     ];
     for (name, code, size) in forms {
-        // Offsets from a 16-byte boundary: an operand misaligned for its own size is refused, one aligned to its size
+        let requirement = if *size == 16 { 1 } else { *size };
+        // Offsets from a 16-byte boundary: an operand misaligned for its own size is #AC, one aligned to its size
         // (even when not to 16 bytes) is no #AC and runs.
         for offset in [1u64, 2, 3, 4, 5, 6, 7, 8, 12] {
             let mut case = Case::new(true);
@@ -1430,11 +1464,15 @@ fn a_misaligned_operand_with_ac_at_cpl3_is_a_refusal_and_the_other_cases_run_lik
             case.rflags |= RFLAGS_AC;
             let (ac, before, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
             let (cpl0_ac, _, _) = in_set(Level::Cpl0, code, &case, 1, |_| {});
-            if offset % size != 0 {
-                assert!(
-                    matches!(ac.result, Result_::Unsupported(_)),
-                    "{name} offset {offset}: a misaligned operand with AC at CPL3 must not retire: {:?}",
-                    ac.result
+            if offset % requirement != 0 {
+                assert_eq!(
+                    ac.result,
+                    Result_::Fault(ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    "{name} offset {offset}: a misaligned operand with AC at CPL3 is #AC(0)"
                 );
                 assert_refused_unchanged(name, &ac, &before, &after, &case);
                 assert_eq!(
@@ -1688,7 +1726,8 @@ fn sse_forms_between_ordinary_cpl3_instructions_and_the_budget_per_instruction()
 // ---------------------------------------------------------------------------------------------------------------
 // S7-32 W4: FXSAVE/FXRSTOR (`NP [REX.W] 0F AE /0, /1`) at CPL3. The SDM does not restrict them to CPL0; at CPL3 the
 // accesses are user accesses (a supervisor page is a #PF with U/S = 1), and a misaligned area with RFLAGS.AC and
-// CR0.AM set is a refusal (the SDM lets the processor raise #AC or #GP there; #AC is not modeled). Otherwise CPL3 and
+// CR0.AM set is #GP(0) (the SDM lets the processor raise #AC or #GP there; ADR-0023 C1, decision 4, takes #GP(0);
+// it was a refusal before C1). Otherwise CPL3 and
 // the CPL0 set give the same result (the CPL0 set is checked byte for byte in `cpl0_profile_set.rs`, `s7_32_w4_*`).
 
 struct W4Run {
@@ -1850,7 +1889,7 @@ fn s7_32_w4_fxsave_and_fxrstor_run_at_cpl3_like_the_cpl0_set() {
 }
 
 #[test]
-fn s7_32_w4_fxsave_and_fxrstor_at_cpl3_fault_on_a_supervisor_page_and_refuse_an_ac_misalignment() {
+fn s7_32_w4_fxsave_and_fxrstor_at_cpl3_fault_on_a_supervisor_page_and_gp_on_an_ac_misalignment() {
     for (code, write) in [
         (&[0x0f, 0xae, 0x00][..], true),
         (&[0x48, 0x0f, 0xae, 0x00][..], true),
@@ -1889,12 +1928,14 @@ fn s7_32_w4_fxsave_and_fxrstor_at_cpl3_fault_on_a_supervisor_page_and_refuse_an_
         } else {
             assert_eq!(cpl3.ram.writes, 0);
         }
-        // A misaligned area: #GP(0) without RFLAGS.AC; with AC (CR0.AM is set) a refusal at CPL3 and #GP(0) at CPL0.
+        // A misaligned area: #GP(0) without RFLAGS.AC; with AC (CR0.AM is set) #GP(0) too at CPL3 (ADR-0023
+        // decision 4: of the two answers the SDM allows for FXSAVE/FXRSTOR, #AC or #GP, the model takes #GP(0); it
+        // was a refusal while #AC was not modeled) and at CPL0.
         let cpl3 = w4_run_at(Level::Cpl3, code, DATA + 8, Some(&image), false);
         assert_eq!(cpl3.result, gp0(), "{code:02x?}");
         assert_eq!((cpl3.ram.reads, cpl3.ram.writes), (0, 0));
         let cpl3 = w4_run_at(Level::Cpl3, code, DATA + 8, Some(&image), true);
-        assert_eq!(cpl3.result, Result_::Unsupported(0xae), "{code:02x?}");
+        assert_eq!(cpl3.result, gp0(), "{code:02x?}");
         assert_eq!((cpl3.ram.reads, cpl3.ram.writes), (0, 0));
         assert_eq!(cpl3.after, cpl3.before);
         let cpl0 = w4_run_at(Level::Cpl0, code, DATA + 8, Some(&image), true);

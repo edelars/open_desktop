@@ -13,6 +13,13 @@ use od_isa::{
 };
 
 const RIP: u64 = 0x40_00b0;
+/// ADR-0023 C1: HLT, the stop marker of these tests, is `Privileged`: #GP(0) at CPL3 before any effect
+/// (it was the `Unsupported { opcode: 0xf4 }` of the allow-list; the marker is kept, its exit changed).
+const HLT_STOP: RunExit = RunExit::Fault(ArchitecturalFault {
+    vector: 13,
+    error_code: Some(0),
+    linear_address: None,
+});
 const CR0_BASE: u64 = 0x8001_0033;
 const CR4_BASE: u64 = 0x20;
 
@@ -350,31 +357,28 @@ fn cpl0_entry_still_refuses_a_ring3_context() {
 
 /// S7-31g: a `Blocking` shadow with IF = 1 at CPL3 is carried only under `with_sti`; without it
 /// the step refuses (after the fetch, before any effect) with `Unsupported { opcode: 0xfb }`,
-/// nothing retired, state untouched. (The entry check no longer returns `StiShadowActive`.)
+/// nothing retired, state untouched. (The entry check no longer returns `StiShadowActive`.) ADR-0023
+/// C1: no longer refused, see below.
 #[test]
-fn cpl3_blocking_shadow_with_if_set_is_refused_without_with_sti_and_carried_with_it() {
+fn cpl3_blocking_shadow_with_if_set_is_carried_with_and_without_with_sti() {
+    // ADR-0023 C1 (review A3): `MOV SS` at CPL3 opens the shadow with IF = 0 or 1, so the shadow is
+    // carried in every set (it was refused without `with_sti` while the set did not produce it).
     let mut carried = user_state();
     carried.rflags |= 1 << 9;
     carried.sti_shadow = Some(StiShadow::Blocking);
     // `xor eax, eax` is admitted at CPL3.
     let code = [0x31, 0xc0];
-    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
-    let mut state = carried.clone();
-    let mut memory = Memory::code(&code);
-    let result =
-        run3(&mut state, &mut memory, &plain, 1).expect("the entry check accepts the state");
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, carried);
-    // With `with_sti` the shadow is carried: the instruction retires and ends it.
     let sti = StiProfile::NonPviLong64V1;
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let with_sti = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_sti(&sti);
-    let mut state = carried.clone();
-    let mut memory = Memory::code(&code);
-    let result = run3(&mut state, &mut memory, &with_sti, 1).unwrap();
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
-    assert_eq!(state.rip, RIP + 2);
+    for set in [plain, with_sti] {
+        let mut state = carried.clone();
+        let mut memory = Memory::code(&code);
+        let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+        assert_eq!(state.rip, RIP + 2);
+    }
 }
 
 #[test]
@@ -390,27 +394,10 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         .with_int3()
         .with_pio_u8()
         .with_rdtsc();
+    // ADR-0023 C1: the forms of a class other than `Neutral` left this list for
+    // `system_forms_at_cpl3_follow_their_class` (the privilege layer decides them); the allow-list
+    // still decides the `Neutral` forms below (until C2a).
     let forms: &[(&str, &[u8], u8)] = &[
-        ("syscall", &[0x0f, 0x05], 0x05),
-        ("mov rax, cr0", &[0x0f, 0x20, 0xc0], 0x20),
-        ("mov cr3, rax", &[0x0f, 0x22, 0xd8], 0x22),
-        ("mov cr4, rax", &[0x0f, 0x22, 0xe0], 0x22),
-        ("hlt", &[0xf4], 0xf4),
-        ("cli", &[0xfa], 0xfa),
-        ("sti", &[0xfb], 0xfb),
-        ("in al, dx", &[0xec], 0xec),
-        ("out dx, al", &[0xee], 0xee),
-        ("wrmsr", &[0x0f, 0x30], 0x30),
-        ("rdmsr", &[0x0f, 0x32], 0x32),
-        ("rdtsc", &[0x0f, 0x31], 0x31),
-        ("swapgs", &[0x0f, 0x01, 0xf8], 0x01),
-        ("iretq", &[0x48, 0xcf], 0xcf),
-        ("lgdt [rax]", &[0x0f, 0x01, 0x10], 0x01),
-        ("lidt [rax]", &[0x0f, 0x01, 0x18], 0x01),
-        ("ltr ax", &[0x0f, 0x00, 0xd8], 0x00),
-        ("lldt ax", &[0x0f, 0x00, 0xd0], 0x00),
-        ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
-        ("int3", &[0xcc], 0xcc),
         // S2-51: CMPXCHG16B executes in the bare run and in the CPL0 set at Ring0 only; the CPL3
         // profile (the Linux live profile) does not list it, and CX16 stays refused at CPL3 even though the Windows CPUID profile (S2-57 slice) declares it.
         ("cmpxchg16b [rdi]", &[0x48, 0x0f, 0xc7, 0x0f], 0xc7),
@@ -991,6 +978,87 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
     }
 }
 
+/// ADR-0023 C1: the system forms that `forbidden_forms_stop_as_unsupported_without_change` listed
+/// as allow-list refusals now follow their class (the members that would execute them at CPL0 are
+/// enabled; the state has no GDTR, IDTR or TR): `Privileged` and `CLI`/`STI` with IOPL 0 are #GP(0)
+/// before any memory access; `IN`/`OUT` read no bit map without a modeled TR (`Unsupported`); `RDTSC`
+/// (CR4.TSD = 0) reads the source; `INT3` and `IRETQ` refuse without an IDT/GDT; `SYSCALL` refuses
+/// without the SYSCALL member. Nothing retires except `RDTSC`; nothing else changes.
+#[test]
+fn system_forms_at_cpl3_follow_their_class() {
+    let cli = CliProfile::NonPviLong64V1;
+    let sti = StiProfile::NonPviLong64V1;
+    let halt = HaltProfile::Long64V1;
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(&cli)
+        .with_sti(&sti)
+        .with_halt(&halt)
+        .with_int3()
+        .with_pio_u8()
+        .with_rdtsc();
+    let gp0 = RunExit::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    });
+    let forms: &[(&str, &[u8], RunExit)] = &[
+        (
+            "syscall",
+            &[0x0f, 0x05],
+            RunExit::Unsupported { opcode: 0x05 },
+        ),
+        ("mov rax, cr0", &[0x0f, 0x20, 0xc0], gp0.clone()),
+        ("mov cr3, rax", &[0x0f, 0x22, 0xd8], gp0.clone()),
+        ("mov cr4, rax", &[0x0f, 0x22, 0xe0], gp0.clone()),
+        ("hlt", &[0xf4], gp0.clone()),
+        ("cli", &[0xfa], gp0.clone()),
+        ("sti", &[0xfb], gp0.clone()),
+        ("in al, dx", &[0xec], RunExit::Unsupported { opcode: 0xec }),
+        ("out dx, al", &[0xee], RunExit::Unsupported { opcode: 0xee }),
+        ("wrmsr", &[0x0f, 0x30], gp0.clone()),
+        ("rdmsr", &[0x0f, 0x32], gp0.clone()),
+        ("swapgs", &[0x0f, 0x01, 0xf8], gp0.clone()),
+        (
+            "iretq",
+            &[0x48, 0xcf],
+            RunExit::Unsupported { opcode: 0xcf },
+        ),
+        ("lgdt [rax]", &[0x0f, 0x01, 0x10], gp0.clone()),
+        ("lidt [rax]", &[0x0f, 0x01, 0x18], gp0.clone()),
+        ("ltr ax", &[0x0f, 0x00, 0xd8], gp0.clone()),
+        ("lldt ax", &[0x0f, 0x00, 0xd0], gp0.clone()),
+        ("invlpg [rax]", &[0x0f, 0x01, 0x38], gp0.clone()),
+        ("int3", &[0xcc], RunExit::Unsupported { opcode: 0xcc }),
+    ];
+    for (name, bytes, expected) in forms {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(exit(&result), expected, "{name}");
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(memory.accesses, 0, "{name}");
+    }
+    // RDTSC with a source retires at CPL3 (CR4.TSD is outside the policy, = 0).
+    let mut state = user_state();
+    let mut memory = Memory::code(&[0x0f, 0x31]);
+    let mut source = || 0x0123_4567_89ab_cdef_u64;
+    let result = run_with_cpl3_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        Some(&mut source),
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x89ab_cdef);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x0123_4567);
+}
+
 #[test]
 fn allowed_forms_stop_at_the_first_forbidden_form_after_retiring() {
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
@@ -998,7 +1066,7 @@ fn allowed_forms_stop_at_the_first_forbidden_form_after_retiring() {
     // mov $1, %ebx ; hlt
     let mut memory = Memory::code(&[0xbb, 0x01, 0x00, 0x00, 0x00, 0xf4]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(exit(&result), &HLT_STOP);
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.rip, RIP + 5);
     assert_eq!(state.gpr[Register::Rbx as usize], 1);
@@ -3206,7 +3274,7 @@ fn init_path_runs_the_movb_then_xor_and_stops_at_the_next_forbidden_form() {
     let target = RIP + 7 + 0xec2 + 5;
     let mut memory = DataMemory::new(&bytes).with_user(target, b'x');
     let result = run3_data(&mut state, &mut memory, 16).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(exit(&result), &HLT_STOP);
     // lea, movb, xor, cmp, jae (not taken), test, je (taken), lea (rip-relative), lea (SIB).
     assert_eq!(result.instructions_executed, 9);
     assert_eq!(state.rip, RIP + 47);
@@ -3452,11 +3520,7 @@ fn cmp_then_jae_follows_the_unsigned_comparison() {
             assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted, "{rbx}");
             assert_eq!(state.rip, RIP + 16, "{rbx}");
         } else {
-            assert_eq!(
-                exit(&result),
-                &RunExit::Unsupported { opcode: 0xf4 },
-                "{rbx}"
-            );
+            assert_eq!(exit(&result), &HLT_STOP, "{rbx}");
             assert_eq!(state.rip, RIP + 9, "{rbx}");
         }
         assert_eq!(state.gpr[Register::Rbx as usize], rbx);
@@ -3497,11 +3561,7 @@ fn short_jcc_follows_every_condition_over_all_flag_combinations() {
                 );
             } else {
                 assert_eq!(state.rip, RIP + 2, "cc {cc} flags {bits:#x}");
-                assert_eq!(
-                    exit(&result),
-                    &RunExit::Unsupported { opcode: 0xf4 },
-                    "cc {cc} flags {bits:#x}"
-                );
+                assert_eq!(exit(&result), &HLT_STOP, "cc {cc} flags {bits:#x}");
             }
         }
     }
@@ -5838,7 +5898,7 @@ fn init_movzbl_testb_cmpb_cmpq_rep_movsb_subq_chain_stops_at_hlt() {
             .with_user(DATA + 0x200 + index, 0);
     }
     let result = run3_data(&mut state, &mut memory, 20).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(exit(&result), &HLT_STOP);
     // Four instructions, then one unit per iteration of the string, then the `subq`.
     assert_eq!(result.instructions_executed, 4 + 5 + 1);
     assert_eq!(state, expected);
@@ -6771,11 +6831,10 @@ fn rep_movsb_is_refused_on_a_state_the_step_would_not_admit() {
             |state| state.activity = Some(CpuActivity::Halted),
             od_isa::INTEGER_FLAGS,
         ),
-        (
-            "sti_shadow Blocking with IF = 1",
-            |state| state.sti_shadow = Some(StiShadow::Blocking),
-            od_isa::INTEGER_FLAGS,
-        ),
+        // ADR-0023 C1 (review A3): a `Blocking` shadow with IF = 1 is carried at CPL3 in every set
+        // (`MOV SS` at CPL3 opens it), so it is no longer a refused state here; the REP string ends
+        // it when it retires (review R1, `c1_segment_loads_cpl3.rs`,
+        // `a_cpl3_rep_string_ends_the_shadow_when_it_retires`).
         (
             "cr0 missing",
             |state| state.cr0 = None,
@@ -7021,7 +7080,7 @@ fn sub_r64_then_movl_chain_follows_init_after_the_pointer_difference() {
         0x48, 0x89, 0xfa, 0x48, 0x29, 0xf2, 0xbf, 1, 0, 0, 0, 0xb8, 1, 0, 0, 0, 0xf4,
     ]);
     let result = run3(&mut state, &mut memory, &set, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(exit(&result), &HLT_STOP);
     assert_eq!(result.instructions_executed, 4);
     assert_eq!(state.rip, RIP + 16);
     assert_eq!(state.gpr[Register::Rdx as usize], 0x14);
@@ -7128,7 +7187,7 @@ fn cpl3_direct_call_and_leave_restore_the_user_stack() {
     }
 
     let result = run3_data(&mut state, &mut memory, 8).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf4 });
+    assert_eq!(exit(&result), &HLT_STOP);
     assert_eq!(result.instructions_executed, 7);
     assert_eq!(state, expected);
     assert_eq!(memory.reads, 2);

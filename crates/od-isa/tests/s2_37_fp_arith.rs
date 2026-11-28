@@ -2658,9 +2658,9 @@ fn a_misaligned_packed_operand_is_gp_and_a_misaligned_scalar_operand_executes() 
                     }
                 }
             }
-            // RFLAGS.AC at CPL3 (CR0 not carried, so AM counts as set): #AC of the scalar forms is not modeled and
-            // an unaligned scalar operand is refused before any read; packed misalignment stays #GP, aligned
-            // operands and CPL0 are unaffected.
+            // RFLAGS.AC at CPL3 (CR0 not carried, so AM counts as set): ADR-0023 C1 (decision 4) models #AC, so an
+            // unaligned scalar operand is #AC(0) before any read (it was `Unsupported`); packed misalignment stays
+            // #GP, aligned operands and CPL0 are unaffected.
             let mut cpu = cpu();
             cpu.rflags |= 1 << 18;
             cpu.gpr[Register::Rax as usize] = 0x8001;
@@ -2672,9 +2672,13 @@ fn a_misaligned_packed_operand_is_gp_and_a_misaligned_scalar_operand_executes() 
             } else {
                 assert_eq!(
                     outcome,
-                    Ok(StepOutcome::Unsupported {
-                        opcode: opcode(kind)
-                    })
+                    Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                        vector: 17,
+                        error_code: Some(0),
+                        linear_address: None,
+                    })),
+                    "{}",
+                    opcode(kind)
                 );
             }
             assert_eq!(cpu, before);

@@ -1115,10 +1115,14 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
     }
 }
 
-// ---- #AC is not guessed ----
+// ---- #AC: none for the 16-byte unaligned forms ----
 
+/// ADR-0023 decision 4 (slice C1): the 16-byte unaligned moves (MOVUPS, MOVUPD, MOVDQU) have no #AC
+/// (Vol. 2A §2.5, exception Type 4: "#AC(0) For 2, 4, or 8 byte memory access if alignment checking
+/// is enabled"); at CPL3 with RFLAGS.AC = 1 a misaligned operand executes (it was `Unsupported`
+/// while #AC was not modeled).
 #[test]
-fn an_unaligned_unaligned_form_at_cpl3_with_the_alignment_check_armed_is_refused_not_guessed() {
+fn an_unaligned_unaligned_form_at_cpl3_with_the_alignment_check_armed_runs_without_ac() {
     const AC: u64 = 1 << 18;
     for kind in KINDS.iter().filter(|kind| !kind.aligned) {
         let code = [kind.prefix, &[0x0f, kind.load, 0x00]].concat();
@@ -1132,15 +1136,9 @@ fn an_unaligned_unaligned_form_at_cpl3_with_the_alignment_check_armed_is_refused
             let outcome = step(&code, &mut cpu, &mut ram, privilege);
             (outcome, cpu == before)
         };
-        // AC = 1, CR0.AM not carried (unknown), CPL3, unaligned: refused, no state change.
-        let (outcome, unchanged) = run(FLAGS | AC, None, 0x8001, PrivilegeLevel::Ring3);
-        assert_eq!(
-            outcome,
-            Ok(StepOutcome::Unsupported { opcode: kind.load }),
-            "{}",
-            kind.name
-        );
-        assert!(unchanged);
+        // AC = 1, CR0.AM not carried (counts as 1), CPL3, unaligned: no #AC for 16 bytes.
+        let (outcome, _) = run(FLAGS | AC, None, 0x8001, PrivilegeLevel::Ring3);
+        assert_eq!(outcome, Ok(StepOutcome::Advanced), "{}", kind.name);
         // Aligned, AC clear, or CPL0: the access runs.
         for (rflags, address, privilege) in [
             (FLAGS | AC, 0x8000, PrivilegeLevel::Ring3),

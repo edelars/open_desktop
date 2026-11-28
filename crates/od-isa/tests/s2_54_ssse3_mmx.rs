@@ -868,10 +868,10 @@ fn a_quadword_source_needs_no_alignment_at_any_offset() {
 }
 
 #[test]
-fn at_cpl3_with_the_alignment_check_armed_a_misaligned_quadword_is_refused_and_an_aligned_one_runs()
-{
-    // #AC is not modeled: the misaligned source stops as Unsupported without a change (the physical
-    // oracle gives SIGBUS/ADRALN), the aligned one and CPL0 are unaffected by RFLAGS.AC.
+fn at_cpl3_with_the_alignment_check_armed_a_misaligned_quadword_is_alignment_check_and_an_aligned_one_runs()
+ {
+    // ADR-0023 C1 (decision 4): the misaligned source is #AC(0) without a change (the physical oracle
+    // gives SIGBUS/ADRALN), the aligned one and CPL0 are unaffected by RFLAGS.AC.
     let kind = kind_named("pshufb");
     for (privilege, address, runs) in [
         (PrivilegeLevel::Ring3, DATA, true),
@@ -893,9 +893,14 @@ fn at_cpl3_with_the_alignment_check_armed_a_misaligned_quadword_is_refused_and_a
                 "{privilege:?} {address:#x}"
             );
         } else {
-            assert!(
-                matches!(outcome, Ok(StepOutcome::Unsupported { opcode: 0x00 })),
-                "{privilege:?} {address:#x}: {outcome:?}"
+            assert_eq!(
+                outcome,
+                Ok(StepOutcome::Fault(od_isa::ArchitecturalFault {
+                    vector: 17,
+                    error_code: Some(0),
+                    linear_address: None
+                })),
+                "{privilege:?} {address:#x}"
             );
             assert_eq!(cpu, before);
             assert!(ram.reads.is_empty());

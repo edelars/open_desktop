@@ -220,9 +220,11 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     // and none admitted (the rule gives these operations no class). S7-32 slice S: 123 more decodes
     // (REPNE SCAS without `67`, `RepneScas`, and LOOPNE/LOOPE/JRCXZ and the `67` LOOP forms) and
     // none admitted (the rule gives these operations no class; they run on the general step).
+    // ADR-0023 C1: 1 006 more decodes (LAR, LSL, VERR and the other VERW forms, `DescriptorQuery`)
+    // and none admitted (the rule gives `DescriptorQuery` no class).
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (150_254, 32_208, 881, 33_089)
+        (151_260, 32_208, 881, 33_089)
     );
     assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }

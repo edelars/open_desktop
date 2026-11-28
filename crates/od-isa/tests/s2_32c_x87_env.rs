@@ -7,7 +7,7 @@
 //! the low 32 bits and clear the upper 32), section 8.1.10 and Figure 8-9 (the 32-bit protected-mode image), Vol. 2A
 //! "FSTENV/FNSTENV" (p. 3-390: the instruction masks all exceptions after saving; FSTENV is FWAIT plus FNSTENV),
 //! "FSAVE/FNSAVE" (p. 3-375: the registers follow in ST(0)..ST(7) order, then FNINIT values) and "FRSTOR" (p. 3-373).
-//! CR0.EM/TS (#NM) and CPL3 #AC are not modeled, like in the neighbouring bounded x87 forms.
+//! CR0.EM/TS (#NM) is not modeled; CPL3 #AC was not modeled until ADR-0023 C1 (the area is checked on 4 bytes since).
 //!
 //! Policy for FCS and FDS (S2-32c): the image carries the represented selector (`Some(v)`) and 0000H when none is
 //! represented (`None`), which is also what a processor with FCS/FDS deprecation saves; FRSTOR loads a selector as
